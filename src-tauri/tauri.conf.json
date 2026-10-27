@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tlas",
+  "version": "0.1.0",
+  "identifier": "com.tlas.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tlas",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 940,
+        "minHeight": 620,
+        "center": true,
+        "resizable": true,
+        "theme": "Dark",
+        "backgroundColor": [27, 27, 27, 255]
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: https://ddragon.leagueoflegends.com; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ddragon.leagueoflegends.com",
+      "devCsp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "publisher": "Tlas",
+    "copyright": "Copyright © 2026 Tlas",
+    "category": "Utility",
+    "shortDescription": "League of Legends draft scout and post-game companion",
+    "longDescription": "Tlas shows champ select scouting and post-game match summaries using only official Riot and League Client APIs. No memory reading, injection, or input automation.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Turkish", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkxMTQyMDg4RUM1MEREQTQKUldTazNWRHNpQ0FVa2VyZ1p1Y0hRZ3FKeThXczBhUWFsOEpVNnQ3RFVCT21VaTZ6MjBnWStzVTIK",
+      "endpoints": [
+        "https://github.com/Auctus0/tlas/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

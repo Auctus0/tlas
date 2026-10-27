@@ -1,0 +1,38 @@
+[package]
+name = "tlas"
+version = "0.1.0"
+description = "Tlas — League of Legends draft and post-game companion"
+authors = ["Tlas"]
+edition = "2024"
+
+[lib]
+# The `_lib` suffix keeps the library name unique on Windows.
+name = "tlas_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "gzip"] }
+tokio = { version = "1", features = ["time", "sync", "macros", "rt-multi-thread"] }
+futures = "0.3"
+parking_lot = "0.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = "2"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Keep release builds small and fast. See https://tauri.app/concept/size/
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
