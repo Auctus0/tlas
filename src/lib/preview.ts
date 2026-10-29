@@ -151,10 +151,11 @@ function card(
     lp,
     wins,
     losses,
-    recentWinrate: Math.round((wins / (wins + losses)) * 100),
+    recentWinrate:
+      wins + losses > 0 ? Math.round((wins / (wins + losses)) * 100) : null,
     recentGames: wins + losses,
     isAlly,
-    hidden: false,
+    hidden: !isAlly,
   };
 }
 

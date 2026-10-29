@@ -153,6 +153,17 @@ input::placeholder {
   max-width: 1000px;
   margin: 0 auto;
   padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.main > .page-head {
+  margin-bottom: 0;
+}
+
+.main > .actions {
+  margin-top: 0;
 }
 
 .page-head {
@@ -180,10 +191,6 @@ input::placeholder {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-}
-
-.panel + .panel {
-  margin-top: 12px;
 }
 
 .panel-head {
@@ -319,11 +326,6 @@ input::placeholder {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   align-items: start;
-  margin-top: 12px;
-}
-
-.grid-2 .panel + .panel {
-  margin-top: 0;
 }
 
 .account {
@@ -347,6 +349,17 @@ input::placeholder {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .who {
@@ -461,6 +474,47 @@ input::placeholder {
 
 .form-dot.win {
   background: #3d6449;
+}
+
+.champ-head,
+.champ-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px 84px 72px 104px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+}
+
+.champ-head {
+  height: 26px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.champ-head span:not(:first-child),
+.champ-row > span:not(:first-child) {
+  text-align: right;
+}
+
+.champ-row {
+  height: 34px;
+  border-bottom: 1px solid var(--border);
+}
+
+.champ-row:last-child {
+  border-bottom: 0;
+}
+
+.champ-row .num {
+  font-variant-numeric: tabular-nums;
+}
+
+.champ-row .num.dim {
+  color: var(--muted);
 }
 
 .team .panel-body {
@@ -582,7 +636,7 @@ input::placeholder {
 .statusbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 16px;
   height: 28px;
   padding: 0 18px;
@@ -603,10 +657,6 @@ input::placeholder {
   .teams,
   .grid-2 {
     grid-template-columns: 1fr;
-  }
-
-  .grid-2 .panel + .panel {
-    margin-top: 12px;
   }
 
   .account {
@@ -641,6 +691,16 @@ input::placeholder {
 
   .match-head span:nth-child(n + 4),
   .match > :nth-child(n + 4) {
+    display: none;
+  }
+
+  .champ-head,
+  .champ-row {
+    grid-template-columns: minmax(0, 1fr) 52px 68px 60px;
+  }
+
+  .champ-head span:last-child,
+  .champ-row > span:last-child {
     display: none;
   }
 }

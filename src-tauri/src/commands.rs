@@ -379,7 +379,7 @@ pub async fn recent_matches(
     let puuid = summoner
         .get("puuid")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| "PUUID bulunamadı. League istemcisi açık mı?".to_string())?
+        .ok_or_else(|| "PUUID bulunamadı. LoL istemcisi açık mı?".to_string())?
         .to_string();
 
     let limit = count.unwrap_or(20).clamp(1, 50);
@@ -488,7 +488,7 @@ pub async fn account_overview(state: State<'_, AppState>) -> Result<AccountOverv
     let puuid = summoner
         .get("puuid")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| "PUUID bulunamadı. League istemcisi açık mı?".to_string())?
+        .ok_or_else(|| "PUUID bulunamadı. LoL istemcisi açık mı?".to_string())?
         .to_string();
 
     let game_name = summoner
@@ -1001,11 +1001,21 @@ fn champion_stats(
         })
         .collect();
 
+    // Sıralama deterministik olmalı: eşit maç sayısında ustalık puanı, sonra
+    // şampiyon kimliği kullanılır. HashMap sırası doğrudan kullanılırsa liste
+    // her yenilemede farklı görünür.
     champions.sort_by(|left, right| {
         right
             .games
             .cmp(&left.games)
             .then_with(|| right.winrate.total_cmp(&left.winrate))
+            .then_with(|| {
+                right
+                    .points
+                    .unwrap_or(0)
+                    .cmp(&left.points.unwrap_or(0))
+            })
+            .then_with(|| left.champion_id.cmp(&right.champion_id))
     });
     champions.truncate(6);
 

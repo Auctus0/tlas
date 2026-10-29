@@ -47,6 +47,13 @@ istemez.
 - Şampiyon ikonu yüklenemezse satır artık boş kutu göstermiyor.
 - Bağlantı yokken "Oyun fazı" satırı ham hata yerine `—` gösteriyor.
 - Derece adları Türkçeleştirildi (Platin, Zümrüt, Elmas, Şampiyon...).
+- Şampiyon listesi maç sayısına göre deterministik sıralanıyor; eşitlikte
+  ustalık puanı ve şampiyon kimliği kullanılıyor (liste artık yenilemede
+  yer değiştirmiyor).
+- **Şampiyonlar** paneli sütunlu tabloya çevrildi (şampiyon, maç, galibiyet,
+  KDA, ustalık); panel ve tablo aralıkları eşitlendi.
+- Arayüzdeki "League" ifadeleri "LoL" olarak sadeleştirildi; durum çubuğundaki
+  güvenlik notu ve tanıtım paragrafları kaldırıldı.
 
 ### Güvenlik sınırları
 

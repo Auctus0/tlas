@@ -76,7 +76,7 @@
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "home", label: "Genel" },
-    { id: "draft", label: "Champ Select" },
+    { id: "draft", label: "Şampiyon Seçimi" },
     { id: "matches", label: "Maçlar" },
     { id: "settings", label: "Ayarlar" },
   ];
@@ -239,7 +239,7 @@
     } catch (error) {
       matchesError = errorText(
         error,
-        "Maçlar alınamadı. League istemcisi açık olmalı.",
+        "LoL istemcisi açık olmalı.",
       );
     } finally {
       matchesLoading = false;
@@ -338,6 +338,10 @@
   }
 
   const phase = $derived(status?.phase ?? null);
+  const avatarInitial = $derived(
+    (overview?.summoner.name ?? status?.summonerName ?? "?").trim().charAt(0).toUpperCase() ||
+      "?",
+  );
   const timerSeconds = $derived.by(() => {
     void tick;
     if (!champ?.timer) return null;
@@ -437,7 +441,7 @@
         ? "Bağlanıyor…"
         : status?.connected
           ? phaseText(status.phase)
-          : "League kapalı"}
+          : "LoL kapalı"}
     </span>
   </header>
 
@@ -469,6 +473,8 @@
                 alt=""
                 onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
               />
+            {:else}
+              <span class="avatar-fallback">{avatarInitial}</span>
             {/if}
           </div>
 
@@ -476,7 +482,7 @@
             <strong>{overview?.summoner.name ?? status?.summonerName ?? "Bağlı hesap yok"}</strong>
             <span class="dim">
               {#if overview?.summoner.level}Seviye {overview.summoner.level} · {/if}
-              {status?.platform ?? "—"} · {status?.connected ? phaseText(phase) : "League kapalı"}
+              {status?.platform ?? "—"} · {status?.connected ? phaseText(phase) : "LoL kapalı"}
             </span>
           </div>
 
@@ -572,7 +578,7 @@
                 </div>
               </div>
             {:else}
-              <div class="empty">Maç geçmişi henüz yüklenmedi. Yenile'ye bas.</div>
+              <div class="empty">Maç geçmişi yok.</div>
             {/if}
           </div>
         </section>
@@ -597,45 +603,53 @@
                 </div>
               {/each}
             {:else}
-              <div class="empty">LP geçmişi biriktiriliyor. Dereceli oynadıkça burası dolar.</div>
+              <div class="empty">Henüz kayıt yok.</div>
             {/if}
           </div>
         </section>
       </div>
 
       <section class="panel">
-        <div class="panel-head">Şampiyonlar <span class="head-note">son {overview?.recentGames ?? 0} maç</span></div>
-        <div class="rows">
-          {#if overview && overview.champions.length > 0}
-            {#each overview.champions as champion (champion.championId)}
-              <div class="row">
-                <span class="member">
-                  <span class="member-icon">
-                    {#if champions[champion.championId]}
-                      <img
-                        src={championIcon(champions[champion.championId].id, ddragonVersion)}
-                        alt=""
-                        loading="lazy"
-                        onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
-                      />
-                    {/if}
-                  </span>
-                  <span class="member-name">
-                    {champions[champion.championId]?.name ?? `Şampiyon ${champion.championId}`}
-                  </span>
-                </span>
-                <span class="value">
-                  {champion.games} maç · {percent(champion.winrate)} · {champion.kda.toFixed(2)} KDA
-                  {#if champion.points != null}
-                    <span class="dim">· {(champion.points / 1000).toFixed(0)}B ustalık</span>
+        <div class="panel-head">
+          <span>Şampiyonlar</span>
+          <span class="head-note">son {overview?.recentGames ?? 0} maç</span>
+        </div>
+        {#if overview && overview.champions.length > 0}
+          <div class="champ-head">
+            <span>Şampiyon</span>
+            <span>Maç</span>
+            <span>Galibiyet</span>
+            <span>KDA</span>
+            <span>Ustalık</span>
+          </div>
+          {#each overview.champions as champion (champion.championId)}
+            <div class="champ-row">
+              <span class="member">
+                <span class="member-icon">
+                  {#if champions[champion.championId]}
+                    <img
+                      src={championIcon(champions[champion.championId].id, ddragonVersion)}
+                      alt=""
+                      loading="lazy"
+                      onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                    />
                   {/if}
                 </span>
-              </div>
-            {/each}
-          {:else}
-            <div class="empty">Şampiyon istatistiği için maç geçmişi gerekli.</div>
-          {/if}
-        </div>
+                <span class="member-name">
+                  {champions[champion.championId]?.name ?? `Şampiyon ${champion.championId}`}
+                </span>
+              </span>
+              <span class="num">{champion.games}</span>
+              <span class="num">{percent(champion.winrate)}</span>
+              <span class="num">{champion.kda.toFixed(2)}</span>
+              <span class="num" class:dim={champion.points == null}>
+                {champion.points != null ? `${(champion.points / 1000).toFixed(0)}B` : "—"}
+              </span>
+            </div>
+          {/each}
+        {:else}
+          <div class="empty">Veri yok.</div>
+        {/if}
       </section>
 
       <div class="actions">
@@ -646,7 +660,7 @@
             refreshChamp(true);
           }}
         >
-          Champ Select
+          Şampiyon seçimi
         </button>
         <button
           class="btn"
@@ -665,7 +679,7 @@
     {:else if tab === "draft"}
       <div class="page-head">
         <div>
-          <h2>Champ Select</h2>
+          <h2>Şampiyon Seçimi</h2>
           <p class="sub">
             {#if champ}
               {champ.allies.length} takım · {champ.enemies.length} rakip
@@ -688,13 +702,13 @@
         <div class="panel">
           <div class="empty">
             <strong>Şampiyon seçimi bekleniyor</strong>
-            League'de champ select başladığında takım ve rakip listesi burada görünür.
+            Sıra başladığında takım ve rakip listesi burada görünür.
           </div>
         </div>
       {:else}
         {#if enemiesHidden}
           <div class="notice">
-            Rakip isimleri gizli. Tlas gizli bilgiyi açığa çıkarmaz.
+            Rakip isimleri gizli.
           </div>
         {/if}
 
@@ -728,7 +742,7 @@
       <div class="page-head">
         <div>
           <h2>Maçlar</h2>
-          <p class="sub">Son 20 maç özeti</p>
+          <p class="sub">Son 20 maç</p>
         </div>
         <button class="btn" onclick={() => loadMatches(true)} disabled={matchesLoading}>
           {matchesLoading ? "Yükleniyor…" : "Yenile"}
@@ -761,7 +775,7 @@
               </div>
             {:else}
               <strong>Maç bulunamadı</strong>
-              Bir maç oynadıktan sonra tekrar dene.
+              Maç yok.
             {/if}
           </div>
         </div>
@@ -784,7 +798,7 @@
       <div class="page-head">
         <div>
           <h2>Ayarlar</h2>
-          <p class="sub">Güncelleme ve yerel veri</p>
+          <p class="sub">Uygulama</p>
         </div>
         <button class="btn primary" onclick={persistSettings}>Kaydet</button>
       </div>
@@ -794,14 +808,13 @@
           <div class="panel-head">Veri kaynağı</div>
           <div class="panel-body">
             <p class="hint">
-              Tlas hiçbir API anahtarı istemez. Oyuncu, derece ve maç verisi yerel
-              League Client'tan (LCU), şampiyon adları ve görseller Data Dragon'dan
-              alınır.
+              API anahtarı yok. Oyuncu ve maç verisi LoL istemcisinden (LCU), şampiyon
+              adları ve görseller Data Dragon'dan alınır.
             </p>
 
             <div class="rows">
               <div class="row">
-                <span class="key">League Client</span>
+                <span class="key">LoL istemcisi</span>
                 <span class="value" class:ok={status?.connected} class:warn={!status?.connected}>
                   {status?.connected ? "Bağlı" : "Kapalı"}
                 </span>
@@ -815,11 +828,6 @@
                 <span class="value">{status?.platform ?? "—"}</span>
               </div>
             </div>
-
-            <p class="hint">
-              League kapalıyken yalnızca son önbellek verisi görünür. Tlas gizli
-              bilgiyi açığa çıkarmaz.
-            </p>
           </div>
         </section>
 
@@ -859,7 +867,7 @@
               </div>
             {/if}
 
-            <p class="hint">Oyun veya champ select sırasında güncelleme kurulmaz.</p>
+            <p class="hint">Maç veya şampiyon seçimi sırasında kurulmaz.</p>
           </div>
         </section>
 
@@ -867,8 +875,8 @@
           <div class="panel-head">Yerel veri</div>
           <div class="panel-body">
             <p class="hint">
-              Scout verisi 10 dakika, kuyruk adları 1 gün önbellekte tutulur. LP geçmişi
-              cihazda saklanır.
+              Scout 10 dk, kuyruk adları 1 gün önbellekte tutulur. LP geçmişi cihazda
+              saklanır.
             </p>
             <div class="actions">
               <button class="btn ghost" onclick={wipeCache}>Önbelleği temizle</button>
@@ -891,7 +899,6 @@
   {/if}
 
   <footer class="statusbar">
-    <span>Ban-safe: bellek okuma, enjeksiyon ve girdi otomasyonu yok</span>
     <span>v{appVersion}</span>
   </footer>
 </div>

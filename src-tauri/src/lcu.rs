@@ -15,7 +15,7 @@ pub struct LcuCredentials {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LcuError {
-    #[error("League istemcisi açık değil")]
+    #[error("LoL istemcisi açık değil")]
     NotRunning,
     #[error("LCU isteği başarısız: {0}")]
     Http(#[from] reqwest::Error),
