@@ -13,13 +13,14 @@ const PHASES: Record<string, string> = {
 };
 
 const QUEUES: Record<number, string> = {
-  0: "Custom",
-  400: "Normal Draft",
-  420: "Solo/Duo",
-  430: "Normal Blind",
-  440: "Flex",
+  0: "Özel Oyun",
+  400: "Normal",
+  420: "Dereceli Tek/Çift",
+  430: "Normal",
+  440: "Dereceli Esnek",
   450: "ARAM",
-  490: "Quickplay",
+  480: "Tam Gaz",
+  490: "Hızlı Oyun",
   700: "Clash",
   720: "ARAM Clash",
   900: "URF",
@@ -72,6 +73,21 @@ export function timeAgo(timestamp: number): string {
 
 export function championIcon(championKey: string, version: string): string {
   return `https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${encodeURIComponent(championKey)}.png`;
+}
+
+export function profileIcon(iconId: number, version: string): string {
+  return `https://ddragon.leagueoflegends.com/cdn/${version}/img/profileicon/${iconId}.png`;
+}
+
+export function percent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `%${value.toFixed(0)}`;
+}
+
+export function lpDelta(delta: number | null): string {
+  if (delta == null) return "—";
+  if (delta === 0) return "0 LP";
+  return `${delta > 0 ? "+" : ""}${delta} LP`;
 }
 
 /**

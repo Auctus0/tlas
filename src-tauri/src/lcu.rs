@@ -161,6 +161,51 @@ impl Lcu {
         self.get_optional("/lol-champ-select/v1/session").await
     }
 
+    /// Dereceli istatistikler. Riot API anahtarı gerekmez; istemci yerel olarak yanıtlar.
+    pub async fn ranked_stats(&self, puuid: &str) -> Result<Value, LcuError> {
+        self.get(&format!("/lol-ranked/v1/ranked-stats/{}", puuid))
+            .await
+    }
+
+    /// Son maçlar. `end` üst sınırı istemci tarafından dahil edilir.
+    pub async fn match_history(
+        &self,
+        puuid: &str,
+        begin: u32,
+        end: u32,
+    ) -> Result<Value, LcuError> {
+        self.get(&format!(
+            "/lol-match-history/v1/products/lol/{}/matches?begIndex={}&endIndex={}",
+            puuid, begin, end
+        ))
+        .await
+    }
+
+    /// Tek maçın tam katılımcı listesi (rol/hat bilgisi burada dolu gelir).
+    pub async fn game_detail(&self, game_id: i64) -> Result<Value, LcuError> {
+        self.get(&format!("/lol-match-history/v1/games/{}", game_id))
+            .await
+    }
+
+    /// Kuyruk listesi (yerelleştirilmiş adlar). Açılışta bir kez okunur.
+    pub async fn queues(&self) -> Result<Value, LcuError> {
+        self.get("/lol-game-queues/v1/queues").await
+    }
+
+    /// Aktif lobi (varsa). Lobi yoksa 404 → None.
+    pub async fn lobby(&self) -> Result<Option<Value>, LcuError> {
+        self.get_optional("/lol-lobby/v2/lobby").await
+    }
+
+    /// Şampiyon ustalık puanları (yerel oyuncunun tüm şampiyonları).
+    pub async fn champion_mastery(&self, puuid: &str) -> Result<Value, LcuError> {
+        self.get(&format!(
+            "/lol-champion-mastery/v1/{}/champion-mastery",
+            puuid
+        ))
+        .await
+    }
+
     pub async fn status(&self) -> LcuStatus {
         match self.phase().await {
             Ok(phase) => {
@@ -180,12 +225,16 @@ impl Lcu {
                         })
                 });
 
-                let platform = summoner.as_ref().and_then(|value| {
-                    value
-                        .get("platformId")
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                });
+                let platform = self
+                    .get::<Value>("/riotclient/region-locale")
+                    .await
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("region")
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                    });
 
                 LcuStatus {
                     connected: true,

@@ -9,17 +9,31 @@
   import PlayerCard from "$lib/components/PlayerCard.svelte";
   import {
     clearCache,
+    getAccountOverview,
     getChampSelect,
+    getLobby,
     getRecentMatches,
     getSettings,
     getStatus,
     saveSettings,
   } from "$lib/api";
-  import { errorText, phaseText } from "$lib/format";
+  import {
+    championIcon,
+    errorText,
+    lpDelta,
+    percent,
+    phaseText,
+    profileIcon,
+    queueName,
+    roleName,
+    timeAgo,
+  } from "$lib/format";
   import type {
+    AccountOverview,
     ChampionInfo,
     ChampSelectView,
     LcuStatus,
+    LobbyView,
     MatchSummary,
     Settings,
   } from "$lib/types";
@@ -30,9 +44,9 @@
   let status = $state<LcuStatus | null>(null);
   let champ = $state<ChampSelectView | null>(null);
   let matches = $state<MatchSummary[]>([]);
+  let overview = $state<AccountOverview | null>(null);
+  let lobby = $state<LobbyView | null>(null);
   let settings = $state<Settings>({
-    riotApiKey: "",
-    platform: "tr1",
     autoUpdate: true,
   });
   let champions = $state<Record<number, ChampionInfo>>({});
@@ -44,8 +58,8 @@
   let matchesLoading = $state(false);
   let matchesLoaded = $state(false);
   let matchesError = $state("");
+  let homeLoading = $state(false);
   let toast = $state("");
-  let showKey = $state(false);
   let updateInfo = $state<{ version: string; body: string | null } | null>(null);
   let pendingUpdate = $state<Update | null>(null);
   let updateStatus = $state("");
@@ -55,28 +69,10 @@
 
   let lastDraftFetch = 0;
   let draftFetchedAt = 0;
+  let lastHomeFetch = 0;
+  let homeRetried = false;
   let tick = $state(0);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const platforms = [
-    ["tr1", "Türkiye"],
-    ["euw1", "EU West"],
-    ["eun1", "EU Nordic & East"],
-    ["na1", "North America"],
-    ["kr", "Korea"],
-    ["br1", "Brazil"],
-    ["la1", "LA North"],
-    ["la2", "LA South"],
-    ["me1", "Middle East"],
-    ["jp1", "Japan"],
-    ["oc1", "Oceania"],
-    ["ph2", "Philippines"],
-    ["sg2", "Singapore"],
-    ["th2", "Thailand"],
-    ["tw2", "Taiwan"],
-    ["vn2", "Vietnam"],
-    ["ru", "Russia"],
-  ];
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "home", label: "Genel" },
@@ -194,6 +190,43 @@
     }
   }
 
+  async function refreshHome(force = false) {
+    if (!status?.connected) {
+      overview = null;
+      lobby = null;
+      return;
+    }
+
+    const now = Date.now();
+    if (!force && now - lastHomeFetch < 8_000) return;
+    if (homeLoading) return;
+
+    homeLoading = true;
+
+    try {
+      const [nextOverview, nextLobby] = await Promise.all([
+        getAccountOverview().catch(() => null),
+        getLobby().catch(() => null),
+      ]);
+
+      overview = nextOverview;
+      lobby = nextLobby;
+      lastHomeFetch = Date.now();
+
+      // LCU geçmişi geç yükleyebilir; boş geldiyse bir kez daha dene.
+      if (nextOverview && nextOverview.recentGames > 0) {
+        homeRetried = false;
+      } else if (nextOverview && !homeRetried) {
+        homeRetried = true;
+        setTimeout(() => {
+          if (tab === "home" && status?.connected) refreshHome(true);
+        }, 6_000);
+      }
+    } finally {
+      homeLoading = false;
+    }
+  }
+
   async function loadMatches(force = false) {
     if (matchesLoading) return;
     if (matchesLoaded && !force) return;
@@ -206,7 +239,7 @@
     } catch (error) {
       matchesError = errorText(
         error,
-        "Maçlar alınamadı. League istemcisi ve API anahtarı gerekli.",
+        "Maçlar alınamadı. League istemcisi açık olmalı.",
       );
     } finally {
       matchesLoading = false;
@@ -311,7 +344,6 @@
     const elapsed = draftFetchedAt ? Date.now() - draftFetchedAt : 0;
     return Math.max(0, Math.ceil((champ.timer - elapsed) / 1_000));
   });
-  const apiReady = $derived(settings.riotApiKey.trim().length > 0);
   const enemiesHidden = $derived(
     (champ?.enemies.length ?? 0) > 0 && champ!.enemies.every((player) => player.hidden),
   );
@@ -320,6 +352,14 @@
     if (tab === "matches" && matches.length === 0 && !matchesLoading && !matchesError) {
       loadMatches();
     }
+  });
+
+  $effect(() => {
+    if (tab !== "home" || !status?.connected) return;
+
+    // İlk açılışta LCU maç geçmişini henüz yüklememiş olabilir; kısa gecikme.
+    const timer = setTimeout(() => refreshHome(), 1_200);
+    return () => clearTimeout(timer);
   });
 
   onMount(() => {
@@ -338,6 +378,9 @@
       if (status?.phase === "ChampSelect") refreshChamp();
     }, 5_000);
     const clockTimer = setInterval(() => tick++, 1_000);
+    const homeTimer = setInterval(() => {
+      if (tab === "home" && status?.connected) refreshHome();
+    }, 20_000);
     const updateTimer = setInterval(
       () => {
         if (settings.autoUpdate) checkUpdates(true);
@@ -359,6 +402,7 @@
       clearInterval(statusTimer);
       clearInterval(draftTimer);
       clearInterval(clockTimer);
+      clearInterval(homeTimer);
       clearInterval(updateTimer);
       clearTimeout(firstUpdate);
       if (toastTimer) clearTimeout(toastTimer);
@@ -402,46 +446,197 @@
       <div class="page-head">
         <div>
           <h2>Genel</h2>
-          <p class="sub">League istemcisi ve hesap durumu</p>
+          <p class="sub">Hesap, derece ve canlı lobi</p>
         </div>
-        <button class="btn" onclick={refreshStatus} disabled={statusLoading}>
-          Yenile
+        <button
+          class="btn"
+          onclick={() => {
+            refreshStatus();
+            refreshHome(true);
+          }}
+          disabled={homeLoading}
+        >
+          {homeLoading ? "Yükleniyor…" : "Yenile"}
         </button>
       </div>
 
       <div class="panel">
-        <div class="panel-head">Durum</div>
-        <div class="rows">
-          <div class="row">
-            <span class="key">League Client</span>
-            <span class="value" class:ok={status?.connected} class:warn={!status?.connected}>
-              {status?.connected ? "Bağlı" : "Kapalı"}
+        <div class="account">
+          <div class="avatar">
+            {#if overview?.summoner.iconId}
+              <img
+                src={profileIcon(overview.summoner.iconId, ddragonVersion)}
+                alt=""
+                onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+              />
+            {/if}
+          </div>
+
+          <div class="who">
+            <strong>{overview?.summoner.name ?? status?.summonerName ?? "Bağlı hesap yok"}</strong>
+            <span class="dim">
+              {#if overview?.summoner.level}Seviye {overview.summoner.level} · {/if}
+              {status?.platform ?? "—"} · {status?.connected ? phaseText(phase) : "League kapalı"}
             </span>
           </div>
-          <div class="row">
-            <span class="key">Oyun fazı</span>
-            <span class="value">{status?.connected ? phaseText(phase) : "—"}</span>
-          </div>
-          <div class="row">
-            <span class="key">Hesap</span>
-            <span class="value">{status?.summonerName ?? "—"}</span>
-          </div>
-          <div class="row">
-            <span class="key">Platform</span>
-            <span class="value">{status?.platform ?? settings.platform}</span>
-          </div>
-          <div class="row">
-            <span class="key">Riot API</span>
-            <span class="value" class:ok={apiReady} class:warn={!apiReady}>
-              {apiReady ? "Anahtar tanımlı" : "Anahtar yok"}
-            </span>
-          </div>
-          <div class="row">
-            <span class="key">Sürüm</span>
-            <span class="value">v{appVersion}</span>
+
+          <div class="chips">
+            {#each overview?.ranks ?? [] as rank (rank.queue)}
+              <div class="chip">
+                <span class="chip-label">{rank.label}</span>
+                <span class="chip-value">
+                  {#if rank.tier}
+                    {rank.tier}{rank.division ? ` ${rank.division}` : ""} · {rank.lp ?? 0} LP
+                  {:else}
+                    Derecesiz
+                  {/if}
+                </span>
+                <span class="chip-sub">
+                  {rank.wins}G {rank.losses}M · {percent(rank.winrate)}
+                </span>
+              </div>
+            {/each}
           </div>
         </div>
       </div>
+
+      {#if lobby && lobby.members.length > 0}
+        <div class="panel">
+          <div class="panel-head">
+            <span>Canlı lobi · {lobby.queueName ?? queueName(lobby.queueId)}</span>
+            <span class="head-note">{lobby.members.length} oyuncu</span>
+          </div>
+          <div class="rows">
+            {#each lobby.members as member}
+              <div class="row">
+                <span class="member">
+                  <span class="member-icon">
+                    {#if member.iconId}
+                      <img
+                        src={profileIcon(member.iconId, ddragonVersion)}
+                        alt=""
+                        onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                      />
+                    {/if}
+                  </span>
+                  <span class="member-name" class:me={member.isSelf}>{member.name}</span>
+                  <span class="member-pos">{roleName(member.position)}</span>
+                </span>
+                <span class="value">
+                  {#if member.tier}
+                    {member.tier}{member.division ? ` ${member.division}` : ""} · {member.lp ?? 0} LP
+                    <span class="dim">· {member.wins ?? 0}G {member.losses ?? 0}M</span>
+                  {:else}
+                    <span class="dim">Derecesiz</span>
+                  {/if}
+                </span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <div class="grid-2">
+        <section class="panel">
+          <div class="panel-head">
+            <span>Son maçlar</span>
+            <span class="head-note">son {overview?.recentGames ?? 0} maç</span>
+          </div>
+          <div class="panel-body">
+            {#if overview && overview.recentGames > 0}
+              <div class="form-strip" aria-label="Son maçlar">
+                {#each overview.recentForm as win}
+                  <span class="form-dot" class:win aria-hidden="true"></span>
+                {/each}
+              </div>
+              <div class="rows">
+                <div class="row">
+                  <span class="key">Galibiyet / Mağlubiyet</span>
+                  <span class="value">{overview.recentWins}G {overview.recentGames - overview.recentWins}M</span>
+                </div>
+                <div class="row">
+                  <span class="key">Galibiyet oranı</span>
+                  <span class="value">{percent(overview.recentWinrate)}</span>
+                </div>
+                <div class="row">
+                  <span class="key">Seri</span>
+                  <span class="value" class:ok={overview.streak > 0} class:warn={overview.streak < 0}>
+                    {#if overview.streak > 0}
+                      {overview.streak} galibiyet
+                    {:else if overview.streak < 0}
+                      {-overview.streak} mağlubiyet
+                    {:else}
+                      —
+                    {/if}
+                  </span>
+                </div>
+              </div>
+            {:else}
+              <div class="empty">Maç geçmişi henüz yüklenmedi. Yenile'ye bas.</div>
+            {/if}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">LP geçmişi</div>
+          <div class="rows">
+            {#if overview && overview.lpHistory.length > 0}
+              {#each overview.lpHistory as point (point.ts)}
+                <div class="row">
+                  <span class="key">
+                    {point.tier}{point.division ? ` ${point.division}` : ""} · {point.lp} LP
+                    <span class="dim">· {timeAgo(point.ts * 1000)}</span>
+                  </span>
+                  <span
+                    class="value"
+                    class:ok={(point.delta ?? 0) > 0}
+                    class:warn={(point.delta ?? 0) < 0}
+                  >
+                    {lpDelta(point.delta)}
+                  </span>
+                </div>
+              {/each}
+            {:else}
+              <div class="empty">LP geçmişi biriktiriliyor. Dereceli oynadıkça burası dolar.</div>
+            {/if}
+          </div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">Şampiyonlar <span class="head-note">son {overview?.recentGames ?? 0} maç</span></div>
+        <div class="rows">
+          {#if overview && overview.champions.length > 0}
+            {#each overview.champions as champion (champion.championId)}
+              <div class="row">
+                <span class="member">
+                  <span class="member-icon">
+                    {#if champions[champion.championId]}
+                      <img
+                        src={championIcon(champions[champion.championId].id, ddragonVersion)}
+                        alt=""
+                        loading="lazy"
+                        onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                      />
+                    {/if}
+                  </span>
+                  <span class="member-name">
+                    {champions[champion.championId]?.name ?? `Şampiyon ${champion.championId}`}
+                  </span>
+                </span>
+                <span class="value">
+                  {champion.games} maç · {percent(champion.winrate)} · {champion.kda.toFixed(2)} KDA
+                  {#if champion.points != null}
+                    <span class="dim">· {(champion.points / 1000).toFixed(0)}B ustalık</span>
+                  {/if}
+                </span>
+              </div>
+            {/each}
+          {:else}
+            <div class="empty">Şampiyon istatistiği için maç geçmişi gerekli.</div>
+          {/if}
+        </div>
+      </section>
 
       <div class="actions">
         <button
@@ -467,11 +662,6 @@
         </button>
         <button class="btn ghost" onclick={() => (tab = "settings")}>Ayarlar</button>
       </div>
-
-      <p class="hint">
-        Tlas yalnızca LCU, Riot Web API ve Data Dragon kullanır. Bellek okuma,
-        enjeksiyon veya girdi otomasyonu yoktur.
-      </p>
     {:else if tab === "draft"}
       <div class="page-head">
         <div>
@@ -493,15 +683,6 @@
           {champLoading ? "Yükleniyor…" : "Yenile"}
         </button>
       </div>
-
-      {#if !apiReady}
-        <div class="notice">
-          Riot API anahtarı tanımlı değil. Rank ve son maç verileri gösterilmez.
-          <button class="btn small ghost" onclick={() => (tab = "settings")}>
-            Ayarlar
-          </button>
-        </div>
-      {/if}
 
       {#if !champ}
         <div class="panel">
@@ -603,44 +784,41 @@
       <div class="page-head">
         <div>
           <h2>Ayarlar</h2>
-          <p class="sub">API, güncelleme ve yerel veri</p>
+          <p class="sub">Güncelleme ve yerel veri</p>
         </div>
         <button class="btn primary" onclick={persistSettings}>Kaydet</button>
       </div>
 
       <div class="settings-grid">
         <section class="panel">
-          <div class="panel-head">Riot API</div>
+          <div class="panel-head">Veri kaynağı</div>
           <div class="panel-body">
-            <div class="field">
-              <label for="api-key">API anahtarı</label>
-              <div class="inline">
-                <input
-                  id="api-key"
-                  type={showKey ? "text" : "password"}
-                  bind:value={settings.riotApiKey}
-                  placeholder="RGAPI-..."
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <button class="btn small" onclick={() => (showKey = !showKey)}>
-                  {showKey ? "Gizle" : "Göster"}
-                </button>
+            <p class="hint">
+              Tlas hiçbir API anahtarı istemez. Oyuncu, derece ve maç verisi yerel
+              League Client'tan (LCU), şampiyon adları ve görseller Data Dragon'dan
+              alınır.
+            </p>
+
+            <div class="rows">
+              <div class="row">
+                <span class="key">League Client</span>
+                <span class="value" class:ok={status?.connected} class:warn={!status?.connected}>
+                  {status?.connected ? "Bağlı" : "Kapalı"}
+                </span>
+              </div>
+              <div class="row">
+                <span class="key">Hesap</span>
+                <span class="value">{status?.summonerName ?? "—"}</span>
+              </div>
+              <div class="row">
+                <span class="key">Sunucu</span>
+                <span class="value">{status?.platform ?? "—"}</span>
               </div>
             </div>
 
-            <div class="field">
-              <label for="platform">Platform</label>
-              <select id="platform" bind:value={settings.platform}>
-                {#each platforms as [value, label]}
-                  <option {value}>{label}</option>
-                {/each}
-              </select>
-            </div>
-
             <p class="hint">
-              Development key 24 saatte bir yenilenir. Anahtar yalnızca bu cihazda
-              saklanır.
+              League kapalıyken yalnızca son önbellek verisi görünür. Tlas gizli
+              bilgiyi açığa çıkarmaz.
             </p>
           </div>
         </section>
@@ -689,7 +867,8 @@
           <div class="panel-head">Yerel veri</div>
           <div class="panel-body">
             <p class="hint">
-              Scout verisi 5 dakika, maç detayları 30 gün önbellekte tutulur.
+              Scout verisi 10 dakika, kuyruk adları 1 gün önbellekte tutulur. LP geçmişi
+              cihazda saklanır.
             </p>
             <div class="actions">
               <button class="btn ghost" onclick={wipeCache}>Önbelleği temizle</button>
@@ -701,12 +880,6 @@
           <div class="panel-head">Hakkında</div>
           <div class="panel-body">
             <p><strong>Tlas</strong> v{appVersion}</p>
-            <p class="hint">
-              Draft scout ve maç özeti. Riot Games ile bağlantılı değildir. Tlas isn't
-              endorsed by Riot Games and doesn't reflect the views or opinions of Riot
-              Games or anyone officially involved in producing or managing Riot Games
-              properties.
-            </p>
           </div>
         </section>
       </div>

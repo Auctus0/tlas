@@ -1,6 +1,6 @@
 [package]
 name = "tlas"
-version = "0.1.0"
+version = "0.1.1"
 description = "Tlas — League of Legends draft and post-game companion"
 authors = ["Tlas"]
 edition = "2024"

@@ -3,7 +3,6 @@ mod config;
 mod db;
 mod lcu;
 mod models;
-mod riot;
 mod state;
 mod tray;
 
@@ -45,6 +44,8 @@ pub fn run() {
             commands::lcu_status,
             commands::champ_select,
             commands::recent_matches,
+            commands::account_overview,
+            commands::lobby_view,
             commands::get_settings,
             commands::save_settings,
             commands::clear_cache,

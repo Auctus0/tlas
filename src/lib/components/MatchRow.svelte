@@ -28,7 +28,7 @@
   </span>
 
   <div class="champion">
-    {#if !iconFailed}
+    {#if !iconFailed && iconKey}
       <img
         src={championIcon(iconKey, version)}
         alt={champion?.name ?? match.championName}
@@ -36,10 +36,12 @@
         onerror={() => (iconFailed = true)}
       />
     {/if}
-    <span class="name">{champion?.name ?? match.championName}</span>
+    <span class="name">
+      {champion?.name ?? (match.championName || "Bilinmeyen şampiyon")}
+    </span>
   </div>
 
-  <span class="dim">{queueName(match.queueId)} · {roleName(match.role)}</span>
+  <span class="dim">{match.queueName ?? queueName(match.queueId)} · {roleName(match.role)}</span>
 
   <span class="num">
     {match.kills}/{match.deaths}/{match.assists}

@@ -1,6 +1,4 @@
 export interface Settings {
-  riotApiKey: string;
-  platform: string;
   autoUpdate: boolean;
 }
 
@@ -50,6 +48,7 @@ export interface MatchSummary {
   cs: number;
   durationSecs: number;
   queueId: number;
+  queueName: string | null;
   gameCreation: number;
   role: string | null;
 }
@@ -57,4 +56,69 @@ export interface MatchSummary {
 export interface ChampionInfo {
   id: string;
   name: string;
+}
+
+export interface RankView {
+  queue: string;
+  label: string;
+  tier: string | null;
+  division: string | null;
+  lp: number | null;
+  wins: number;
+  losses: number;
+  winrate: number | null;
+  provisional: boolean;
+}
+
+export interface LpPoint {
+  ts: number;
+  tier: string;
+  division: string | null;
+  lp: number;
+  delta: number | null;
+}
+
+export interface ChampionStat {
+  championId: number;
+  games: number;
+  wins: number;
+  winrate: number;
+  kda: number;
+  points: number | null;
+}
+
+export interface AccountOverview {
+  summoner: {
+    name: string;
+    level: number | null;
+    iconId: number | null;
+  };
+  ranks: RankView[];
+  lpHistory: LpPoint[];
+  champions: ChampionStat[];
+  recentGames: number;
+  recentWins: number;
+  recentWinrate: number | null;
+  recentForm: boolean[];
+  streak: number;
+}
+
+export interface LobbyMember {
+  name: string;
+  level: number | null;
+  iconId: number | null;
+  tier: string | null;
+  division: string | null;
+  lp: number | null;
+  wins: number | null;
+  losses: number | null;
+  winrate: number | null;
+  position: string | null;
+  isSelf: boolean;
+}
+
+export interface LobbyView {
+  queueId: number;
+  queueName: string | null;
+  members: LobbyMember[];
 }

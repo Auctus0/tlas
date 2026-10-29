@@ -27,7 +27,7 @@
 
 ---
 
-## 2. Klasör Yapısı (v0.1.0)
+## 2. Klasör Yapısı (v0.1.1)
 
 ```
 LOL/
@@ -60,8 +60,7 @@ LOL/
 │       ├── commands.rs           # #[tauri::command] IPC + testler
 │       ├── models.rs             # serde structs
 │       ├── lcu.rs                # lockfile keşfi + HTTP client
-│       ├── riot.rs               # rate-limited client
-│       ├── db.rs                 # SQLite WAL TTL cache
+│       ├── db.rs                 # SQLite WAL cache + LP geçmişi
 │       └── config.rs             # settings.json
 ├── assets/tlas-icon.png
 ├── CHANGELOG.md
@@ -72,7 +71,7 @@ LOL/
 
 > Planlanan ama henüz uygulanmayan modüller: LCU WebSocket event aboneliği,
 > `live/` (Live Client Data API), `analysis/postgame.rs` timeline metrikleri,
-> migration dosyaları. v0.1.0 bunları polling + match-v5 özetiyle karşılıyor.
+> migration dosyaları. v0.1.1 bunları polling + LCU maç özetiyle karşılıyor.
 
 ---
 
@@ -81,24 +80,30 @@ LOL/
 ### Champ Select (kritik yol)
 
 ```
-LCU phase poll / WS event
+LCU phase poll (1 Hz)
         │  "ChampSelect"
         ▼
 GET /lol-champ-select/v1/session
         │  5 ally + 5 enemy (summonerId / puuid)
         ▼
-┌─────────────────────────────────────┐
-│  Riot API (paralel, concurrency 6)  │
-│  league-v4  → rank / LP / winrate   │
-│  match-v5   → son 5 maç özeti       │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  LCU (paralel, kart başına join_all)             │
+│  /lol-ranked/v1/ranked-stats/{puuid}             │
+│      → tier / division / LP / W-L                │
+│  /lol-match-history/v1/products/lol/{puuid}/     │
+│      matches → son 20 maç W-L (SR filtreli)      │
+└──────────────────────────────────────────────────┘
         │
         ▼
-SQLite cache (PUUID bazlı, 5 dk TTL)
+SQLite kv cache (PUUID bazlı, 10 dk TTL)
         │
         ▼
 Tauri invoke → Svelte kartları
 ```
+
+Şampiyon adı/ikonu ayrı bir katmandır: frontend, Data Dragon
+`versions.json` + `champion.json` dosyalarını 7 gün `localStorage`'da tutar.
+Riot Web API anahtarı hiçbir aşamada kullanılmaz.
 
 **Gecikme bütçesi**
 | Durum | Hedef |
@@ -107,27 +112,55 @@ Tauri invoke → Svelte kartları
 | Cache boş, sıcak ağ | < 1.2 s |
 | Cold start + 10 oyuncu | < 2.5 s |
 
-**Prefetch:** v0.1.0'da champ select açıldığında istekler başlar. Planlanan: lobby
+**Prefetch:** v0.1.1'de champ select açıldığında istekler başlar. Planlanan: lobby
 oluştuğunda (`/lol-lobby/v2/lobby`) takım arkadaşlarını çözüp champ select'te sadece
 eksikleri çekmek.
+
+### Genel sekmesi (hesap + lobi)
+
+```
+LCU /lol-summoner/v1/current-summoner      → Riot ID, seviye, ikon
+LCU /lol-ranked/v1/ranked-stats/{puuid}    → solo + flex (tier, division, LP, W/L)
+LCU /lol-match-history/.../matches (50)    → son 20 form, şampiyon istatistikleri
+LCU /lol-champion-mastery/v1/{puuid}/...   → ustalık puanı
+LCU /lol-lobby/v2/lobby                    → lobi üyeleri + tercih edilen rol
+        │
+        ▼
+account_overview / lobby_view (20 sn'de bir, yalnızca Genel sekmesi açıkken)
+        │
+        ▼
+SQLite lp_history: derece/LP her değiştiğinde yeni satır (son 200 kayıt)
+```
+
+LP geçmişi LCU'da bulunmadığı için Tlas kendi gözlemlerinden oluşturur:
+tier/division aynı kaldığı sürece fark (`+21`, `-18`) hesaplanır, terfi/düşüş
+sonrası fark gösterilmez. Bu tablo `clear_cache` ile silinmez; kullanıcı verisi
+sayılır.
 
 ### Post-game
 
 ```
 LCU /lol-match-history/v1/products/lol/{puuid}/matches
-        │  (key gerekmez, hızlı)
+        │  anahtarsız, hızlı; yalnızca istenen oyuncunun katılımı döner
         ▼
-matchId listesi → SQLite
-        │  kullanıcı satıra tıklar
+Özet satırları (KDA, CS, süre, queue)
+        │  rol bilgisi özette boş ("NONE")
         ▼
-Riot match-v5 + timeline → analysis/postgame.rs
-        │
+/lol-match-history/v1/games/{gameId}
+        │  10 katılımcı + timeline.lane/role, 6 eşzamanlı
         ▼
-Metrikler: CS/dk, gold diff @10/15/20, ward, objective participation,
-death positions, power spikes, takım fight katılımı
+Rol eşlemesi: TOP/MIDDLE/JUNGLE, BOTTOM+CARRY → BOTTOM,
+              BOTTOM+SUPPORT → UTILITY
 ```
 
-Post-game **tamamen offline** çalışabilir (LCU + cache). Riot API key yoksa bile son maçlar görünür; detay analiz için key gerekir.
+Post-game tamamen çevrimdışı çalışır: LCU + yerel cache dışında hiçbir servise
+istek gitmez. Gelecek sürümde `analysis/postgame.rs` timeline metrikleri
+(CS/dk, gold diff, ward, objective participation) ekleyecek.
+
+**Silahlanma notu:** LCU'nun maç özeti uç noktası zaman zaman
+`participantIdentities` içinde tek oyuncu döndürür; bu yüzden tam kadro
+bilgisi gereken her şey `/lol-match-history/v1/games/{gameId}` üzerinden
+tamamlanır.
 
 ---
 
@@ -141,7 +174,7 @@ Post-game **tamamen offline** çalışabilir (LCU + cache). Riot API key yoksa b
 | **CPU (idle)** | Oyuna bağlı değilken 0 polling; event-driven | < 0.1 % |
 | **CPU (champ select)** | Paralel fetch, cache, tek render | < 1 % burst |
 | **Ağ** | HTTP/2 keep-alive, gzip, connection pool, 5 s timeout | 10 oyuncu < 25 istek |
-| **Rate limit** | Token bucket, `X-App-Rate-Limit` / `X-Method-Rate-Limit` header'ları | 429 ≈ 0 |
+| **LCU yükü** | Kart başına 2 istek, eşzamanlı `join_all`, 10 dk cache | champ select'te 20 istek |
 | **DB** | SQLite WAL, `synchronous=NORMAL`, `mmap_size`, indeks | Sorgu < 5 ms |
 | **UI** | Svelte 5 runes, sanal liste, `content-visibility:auto` | 60 fps, layout shift yok |
 | **Overlay** | Ayrı şeffaf pencere, sadece değişimde render | GPU < 1 % |
@@ -218,16 +251,32 @@ client.get(format!("https://127.0.0.1:{}/lol-champ-select/v1/session", port))
     .send().await?;
 ```
 
-### Riot API client
+### LCU veri uç noktaları
 
-- Base: platform (`tr1`, `euw1`, ...) ve regional (`europe`, `asia`, ...) ayrımı.
-- Header'lardan limit öğren: `x-app-rate-limit: 20:1,100:120`.
-- 429 → `Retry-After` kadar bekle, jitter ekle.
-- `match-v5` için `europe` / `americas` / `asia` / `sea` doğru seçilmeli.
+| Uç nokta | Kullanım |
+|---|---|
+| `/lol-summoner/v1/current-summoner` | Hesap, PUUID, platform |
+| `/lol-gameflow/v1/gameflow-phase` | Faz takibi (ChampSelect, InProgress, ...) |
+| `/lol-champ-select/v1/session` | 5v5 seçim oturumu |
+| `/lol-ranked/v1/ranked-stats/{puuid}` | `queueMap` → solo/flex tier, division, LP, W-L |
+| `/lol-match-history/v1/products/lol/{puuid}/matches` | Son maç listesi (özet) |
+| `/lol-match-history/v1/games/{gameId}` | Tam kadro + `timeline.lane/role` |
+| `/lol-lobby/v2/lobby` | Canlı lobi üyeleri ve rol tercihleri |
+| `/lol-champion-mastery/v1/{puuid}/champion-mastery` | Ustalık puanları |
+| `/lol-summoner/v1/summoners/{summonerId}` | Lobi üyesi adı/seviyesi |
+| `/lol-game-queues/v1/queues` | Yerelleştirilmiş kuyruk adları (1 gün cache) |
+| `/riotclient/region-locale` | Sunucu bölgesi (TR, EUW, ...) |
 
-### API key saklama
+Rank seçimi: `RANKED_SOLO_5x5` → `JADE_RANKED_SOLO_5x5` → `RANKED_FLEX_SR`.
+Apex tier'larda division yoktur, LP kullanılır. SR queue filtresi:
+`400, 420, 430, 440, 480, 490, 700`.
 
-Düz metin dosya **kullanma**. Windows Credential Manager (`keyring` crate) veya DPAPI (`CryptProtectData`). Anahtar sadece Rust tarafında; frontend'e asla gönderme.
+### API anahtarı — yok
+
+v0.1.1 itibarıyla Riot Web API istemcisi (`riot.rs`), `riotApiKey` ve
+`platform` ayarları kaldırıldı. Sabit veri yalnızca Data Dragon'dan okunur;
+kullanıcıdan hiçbir kimlik bilgisi istenmez. Bu, hem kurulum sürtünmesini
+hem de anahtar sızıntısı riskini ortadan kaldırır.
 
 ### Champ select event (faz 2)
 
@@ -242,8 +291,8 @@ Polling yerine LCU WebSocket: `wss://127.0.0.1:{port}`, basic auth, `OnJsonApiEv
 | **M0** | Tauri iskelet, tray, LCU lockfile keşfi, "client bağlı" göstergesi | 1–2 gün |
 | **M1** | Champ select ekranı, 10 oyuncu kartı, rank + son maçlar, cache | 3–5 gün |
 | **M2** | Post-game liste + timeline metrikleri + grafikler | 3–5 gün |
-| **M3** | Overlay penceresi, ayarlar, key saklama, installer + updater | 2–3 gün |
-| **M4** | Rate limiter sertleştirme, testler, PBE, Developer Portal kaydı | 2–4 gün |
+| **M3** | Overlay penceresi, ayarlar, installer + updater | 2–3 gün |
+| **M4** | LCU WebSocket event'leri, testler, Developer Portal kaydı | 2–4 gün |
 
 ---
 
@@ -252,9 +301,10 @@ Polling yerine LCU WebSocket: `wss://127.0.0.1:{port}`, basic auth, `OnJsonApiEv
 | Risk | Önlem |
 |---|---|
 | LCU endpoint'i patch'te değişir | Sağlayıcı katmanı + hata durumunda polling'e düş |
-| Riot API key reddedilir | LCU-only degraded mode |
-| Production key gecikir | Kişisel key + yerel cache ile başla |
-| Champ select çok kısa | Lobby'de prefetch, cache, paralel istek |
+| LCU kapalı / giriş yapılmamış | Boş durum ekranı, son önbellek verisi |
+| Maç özetinde rol boş gelir | `/games/{gameId}` detayından tamamla |
+| Data Dragon erişilemez | Şampiyon adı ID'den, ikon placeholder |
+| Champ select çok kısa | Cache, paralel istek, 10 dk TTL |
 | Kullanıcı "MMR göster" ister | Politik olarak yasak; rank/LP göster |
 | Overlay anti-cheat tarafından yanlış algılanır | Inject etme, ayrı pencere, imzalı binary |
 | Kore'de LCU yasak | Platform bazlı özellik kapatma |

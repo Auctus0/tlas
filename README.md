@@ -5,24 +5,31 @@ League of Legends için **draft scout + post-game analiz** masaüstü uygulamas�
 - **Stack:** Tauri 2 · Rust · Svelte 5 (SvelteKit) · TypeScript · SQLite
 - **Platform:** Windows 10/11
 - **Güncelleme:** GitHub Releases + Tauri updater (imzalı)
+- **Kurulum:** API anahtarı gerekmez — veri LCU + Data Dragon'dan gelir
 - **Ban-safe:** Memory okuma, DLL injection, input otomasyonu, gizli bilgi gösterimi yok.
 
 > Tlas isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
 
 ---
 
-## Özellikler (v0.1.0)
+## Özellikler (v0.1.1)
 
 - League Client API (LCU) üzerinden otomatik bağlantı ve oyun fazı takibi
+- **Genel** sekmesinde hesap özeti: Riot ID, seviye, solo/flex derece ve LP
+- LP geçmişi, son 20 maç formu, şampiyon bazlı galibiyet oranı ve KDA
+- **Canlı lobi takibi**: lobideki oyuncular, roller ve dereceleri
 - Champ select'te takım listesi, rank/LP, son maç galibiyet oranı
 - Rakip isimleri gizliyse **açığa çıkarmaz**
-- Riot Web API ile son 20 maç özeti (KDA, CS, süre, queue)
-- SQLite WAL cache + rate limit korumalı Riot istemcisi
+- Son 20 maç özeti: şampiyon, KDA, CS, süre, queue ve rol
+- Şampiyon adları ve görselleri Data Dragon'dan (Türkçe yerelleştirme)
+- SQLite WAL cache: scout verisi 10 dakika, kalanı oturum içi
 - Tray'de çalışma, kapatınca arka plana küçülme, tek örnek kilidi
 - GitHub Releases üzerinden imzalı otomatik güncelleme (4 saatte bir sessiz kontrol)
 - Oyun ve champ select sırasında güncelleme kurulumunu engelleyen faz koruması
 
-> Not: Rakip oyuncuların rankını göstermek için Riot API anahtarı gerekir. Anahtar yokken LCU tarafı (kendi takımın, faz, maç geçmişi) çalışmaya devam eder.
+> API anahtarı, kayıt veya Riot Developer Portal hesabı gerekmez. Tlas yalnızca
+> açık League Client'ın yerel API'sini (LCU) ve herkese açık Data Dragon
+> dosyalarını okur. League kapalıyken son önbellek verisi gösterilir.
 
 ---
 
@@ -61,15 +68,28 @@ cargo test             # Rust birim testleri
 
 ---
 
-## Riot API anahtarı
+## Veri kaynağı
 
-1. https://developer.riotgames.com adresinden giriş yap.
-2. Development key al (24 saatte bir yenilenir).
-3. Tlas → Ayarlar → API anahtarı alanına yapıştır, platformu seç, kaydet.
+Tlas hiçbir API anahtarı istemez. İki kaynak kullanılır:
 
-Public dağıtım için **production key** gerekir. Başvuru, çalışan bir prototip ister ve haftalar–aylar sürebilir.
+| Kaynak | Ne için | Nereden |
+|---|---|---|
+| LCU (`https://127.0.0.1:<port>`) | Hesap, faz, champ select, rank/LP, maç geçmişi | League Client'ın `lockfile` dosyası (basic auth) |
+| Data Dragon | Şampiyon adları, ikonları, sürüm | `ddragon.leagueoflegends.com` (herkese açık, CDN) |
 
-Güvenlik notu: v0.1.0 anahtarı `%APPDATA%/com.tlas.desktop/settings.json` içinde saklar. Yayın öncesinde Windows Credential Manager / DPAPI'ye taşınmalı.
+LCU bağlantısı `lockfile` üzerinden kurulur. Farklı bir sürücüye kurduysan
+`LEAGUE_LOCKFILE` ortam değişkeniyle yolu belirtebilirsin:
+
+```powershell
+$env:LEAGUE_LOCKFILE = "F:\Riot Games\League of Legends\lockfile"
+```
+
+Rank verisi `/lol-ranked/v1/ranked-stats/{puuid}` üzerinden okunur; solo queue
+yoksa flex queue'ya düşer. Maç rolleri özet listede boş geldiği için
+`/lol-match-history/v1/games/{gameId}` detayından tamamlanır.
+
+> Rakip isimleri gizliyse (dereceli champ select) Tlas bunları çözmez; kartlar
+> "Gizli oyuncu" olarak kalır. Bu bilinçli bir ban-safe sınırıdır.
 
 ---
 
@@ -140,24 +160,24 @@ Detaylar: [`UPDATER.md`](UPDATER.md)
 
 ## GitHub'a ilk yayın
 
-Repo henüz oluşturulmadı. GitHub CLI ile:
+Repo: `Auctus0/tlas` (public). Sıfırdan kurmak gerekirse:
 
 ```powershell
-git init
+git init -b main
 git add .
-git commit -m "feat: Tlas v0.1.0"
+git commit -m "feat: Tlas v0.1.1"
 gh repo create Auctus0/tlas --public --source . --remote origin --push
 ```
 
 Ardından yukarıdaki iki secret'ı ekle, sürümü bump'la ve tag'i push et:
 
 ```powershell
-git tag v0.1.0
+git tag v0.1.1
 git push origin main --tags
 ```
 
 Actions bitince draft release'i kontrol et ve **Publish** et. İlk kurulum dosyası
-`Tlas_0.1.0_x64-setup.exe` olur.
+`Tlas_0.1.1_x64-setup.exe` olur.
 
 ---
 
@@ -167,7 +187,7 @@ Actions bitince draft release'i kontrol et ve **Publish** et. İlk kurulum dosya
 |---|---|
 | LCU HTTPS okuma (`lockfile` + basic auth) | `ReadProcessMemory` / `WriteProcessMemory` |
 | Live Client Data API okuma | DLL injection / hooking |
-| Riot Web API | `SendInput` / input otomasyonu |
+| Data Dragon (şampiyon adı/ikonu) | `SendInput` / input otomasyonu |
 | Rune sayfası yazma (ileride, kullanıcı tıklarsa) | Auto-accept / auto-ban / auto-dodge |
 | Harici tray + pencere | Oyun içine injection overlay |
 | Görünen bilgiyi gösterme | Enemy cooldown / gizli bilgi / MMR-ELO |
@@ -195,8 +215,7 @@ LCU resmî olarak desteklenmiyor; Riot süreklilik garantisi vermiyor. Ürünü 
 │   └── src/
 │       ├── lib.rs             # Tauri setup + tek örnek + tray + window
 │       ├── commands.rs        # IPC yüzeyi + testler
-│       ├── lcu.rs             # lockfile + LCU HTTP
-│       ├── riot.rs            # rate limit + Riot API
+│       ├── lcu.rs             # lockfile + LCU HTTP (rank, maç geçmişi)
 │       ├── db.rs              # SQLite cache
 │       ├── config.rs          # ayarlar
 │       └── state.rs
@@ -213,7 +232,7 @@ LCU resmî olarak desteklenmiyor; Riot süreklilik garantisi vermiyor. Ürünü 
 
 - [x] M0 — Tauri iskelet, tray, LCU bağlantısı, faz takibi
 - [x] M1 — Champ select kartları, rank/winrate, SQLite cache
-- [x] M2 — Son maçlar listesi
+- [x] M2 — Son maçlar listesi (LCU, API anahtarsız)
 - [ ] M2.1 — Maç detayı + timeline metrikleri
-- [ ] M3 — Overlay penceresi, keychain, installer cilası
-- [ ] M4 — Rate limiter sertleştirme, testler, Developer Portal kaydı
+- [ ] M3 — Overlay penceresi, installer cilası
+- [ ] M4 — LCU WebSocket event'leri, testler, Developer Portal kaydı

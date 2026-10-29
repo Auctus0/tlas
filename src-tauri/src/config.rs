@@ -6,18 +6,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    pub riot_api_key: String,
-    pub platform: String,
     pub auto_update: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            riot_api_key: String::new(),
-            platform: "tr1".to_string(),
-            auto_update: true,
-        }
+        Self { auto_update: true }
     }
 }
 

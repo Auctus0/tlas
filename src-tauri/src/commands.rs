@@ -1,24 +1,22 @@
 use std::collections::HashMap;
 
 use futures::future::join_all;
-use futures::stream::{self, StreamExt};
+use futures::stream::StreamExt;
 use serde_json::Value;
 use tauri::State;
 
 use crate::config::Settings;
-use crate::models::{ChampSelectView, LcuStatus, MatchSummary, PlayerCard, ScoutCache};
-use crate::riot::Riot;
+use crate::db::LpSnapshot;
+use crate::models::{
+    AccountOverview, ChampionStat, ChampSelectView, LcuStatus, LobbyMember, LobbyView, LpPoint,
+    MatchSummary, PlayerCard, RankView, ScoutCache, SummonerInfo,
+};
 use crate::state::AppState;
 
-/// Scout verisi 5 dakika taze kalır; champ select sırasında gereksiz Riot çağrısı yapılmaz.
-const SCOUT_TTL_SECS: i64 = 300;
-/// Maç detayları değişmez; uzun süre cache'lenir.
-const MATCH_TTL_SECS: i64 = 30 * 24 * 3_600;
-/// Maç ID listesi kısa süre cache'lenir; yeni maçlar için yeterli.
-const MATCH_IDS_TTL_SECS: i64 = 90;
-const SCOUT_MATCH_COUNT: u32 = 5;
-/// Riot API'ye aynı anda gönderilen maç isteği sayısı.
-const MATCH_CONCURRENCY: usize = 6;
+/// Scout verisi 10 dakika taze kalır; derece ve son maçlar bu sürede değişmez.
+const SCOUT_TTL_SECS: i64 = 600;
+/// Kart başına son maç penceresi.
+const SCOUT_MATCH_COUNT: u32 = 20;
 
 #[tauri::command]
 pub async fn lcu_status(state: State<'_, AppState>) -> Result<LcuStatus, String> {
@@ -72,10 +70,9 @@ pub async fn champ_select(state: State<'_, AppState>) -> Result<Option<ChampSele
         .and_then(|player| player.get("championId"))
         .and_then(|value| value.as_i64());
 
-    let settings = app.config.get();
     let (allies, enemies) = tokio::join!(
-        build_team(app, &session, "myTeam", true, &settings),
-        build_team(app, &session, "theirTeam", false, &settings),
+        build_team(app, &session, "myTeam", true),
+        build_team(app, &session, "theirTeam", false),
     );
 
     Ok(Some(ChampSelectView {
@@ -92,7 +89,6 @@ async fn build_team(
     session: &Value,
     team_key: &str,
     is_ally: bool,
-    settings: &Settings,
 ) -> Vec<PlayerCard> {
     let Some(team) = session.get(team_key).and_then(|value| value.as_array()) else {
         return Vec::new();
@@ -125,20 +121,12 @@ async fn build_team(
         .map(|(player, summoner)| base_card(player, summoner, is_ally))
         .collect();
 
-    if settings.riot_api_key.trim().is_empty() {
-        return cards;
-    }
-
-    // Riot çağrılarını kart başına paralel yürüt; sıra korunur.
-    join_all(cards.into_iter().map(|mut card| {
-        let settings = settings.clone();
-
-        async move {
-            if !card.hidden {
-                enrich_card(app, &settings, &mut card).await;
-            }
-            card
+    // Kart zenginleştirmesini paralel yürüt; sıra korunur.
+    join_all(cards.into_iter().map(|mut card| async move {
+        if !card.hidden {
+            enrich_card(app, &mut card).await;
         }
+        card
     }))
     .await
 }
@@ -211,7 +199,7 @@ fn base_card(player: &Value, summoner: Option<Value>, is_ally: bool) -> PlayerCa
     }
 }
 
-async fn enrich_card(app: &AppState, settings: &Settings, card: &mut PlayerCard) {
+async fn enrich_card(app: &AppState, card: &mut PlayerCard) {
     let Some(puuid) = card.puuid.clone() else {
         return;
     };
@@ -226,40 +214,34 @@ async fn enrich_card(app: &AppState, settings: &Settings, card: &mut PlayerCard)
 
     let mut scout = ScoutCache::default();
 
-    if let Ok(entries) = app
-        .riot
-        .league_by_puuid(&settings.riot_api_key, &settings.platform, &puuid)
-        .await
-    {
-        if let Some(entry) = pick_solo_entry(&entries) {
+    if let Ok(stats) = app.lcu.ranked_stats(&puuid).await {
+        if let Some(entry) = pick_solo_entry(&stats) {
             scout.tier = entry.get("tier").and_then(|value| value.as_str()).map(String::from);
-            scout.division = entry.get("rank").and_then(|value| value.as_str()).map(String::from);
+            scout.division = entry
+                .get("division")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty() && *value != "NA")
+                .map(String::from);
             scout.lp = entry.get("leaguePoints").and_then(|value| value.as_i64());
             scout.wins = entry.get("wins").and_then(|value| value.as_i64());
             scout.losses = entry.get("losses").and_then(|value| value.as_i64());
         }
     }
 
-    let regional = Riot::regional(&settings.platform);
-
-    if let Some(match_ids) = match_ids(
-        app,
-        &settings.riot_api_key,
-        regional,
-        &puuid,
-        SCOUT_MATCH_COUNT,
-    )
-    .await
-    {
-        let matches = load_matches(app, &settings.riot_api_key, regional, &match_ids).await;
+    if let Ok(history) = app.lcu.match_history(&puuid, 0, SCOUT_MATCH_COUNT).await {
         let mut wins = 0i64;
         let mut games = 0i64;
 
-        for (_, match_json) in &matches {
-            if let Some(participant) = participant_for(match_json, &puuid) {
+        for game in history_games(&history) {
+            let queue_id = game.get("queueId").and_then(|value| value.as_i64()).unwrap_or(0);
+            if !is_summoners_rift(queue_id) {
+                continue;
+            }
+
+            if let Some(participant) = lcu_participant(game, &puuid) {
                 games += 1;
                 if participant
-                    .get("win")
+                    .pointer("/stats/win")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false)
                 {
@@ -281,85 +263,23 @@ async fn enrich_card(app: &AppState, settings: &Settings, card: &mut PlayerCard)
     apply_scout(card, &scout);
 }
 
-async fn match_ids(
-    app: &AppState,
-    key: &str,
-    regional: &str,
-    puuid: &str,
-    limit: u32,
-) -> Option<Vec<String>> {
-    let cache_key = format!("matchids:{}:{}:{}", regional, puuid, limit);
-
-    if let Some(cached) = app.db.kv_get(&cache_key, MATCH_IDS_TTL_SECS) {
-        if let Ok(ids) = serde_json::from_str::<Vec<String>>(&cached) {
-            return Some(ids);
-        }
-    }
-
-    let ids = app.riot.match_ids(key, regional, puuid, limit).await.ok()?;
-    if let Ok(serialized) = serde_json::to_string(&ids) {
-        let _ = app.db.kv_set(&cache_key, &serialized);
-    }
-
-    Some(ids)
+fn history_games(history: &Value) -> &[Value] {
+    history
+        .pointer("/games/games")
+        .and_then(|value| value.as_array())
+        .map(|value| value.as_slice())
+        .unwrap_or(&[])
 }
 
-async fn load_match(
-    app: &AppState,
-    key: &str,
-    regional: &str,
-    match_id: &str,
-) -> Option<Value> {
-    if let Some(cached) = app.db.match_get(match_id, MATCH_TTL_SECS) {
-        if let Ok(value) = serde_json::from_str::<Value>(&cached) {
-            return Some(value);
-        }
-    }
-
-    let value = app.riot.match_by_id(key, regional, match_id).await.ok()?;
-    if let Ok(serialized) = serde_json::to_string(&value) {
-        let _ = app.db.match_set(match_id, &serialized);
-    }
-
-    Some(value)
+fn is_summoners_rift(queue_id: i64) -> bool {
+    matches!(queue_id, 400 | 420 | 430 | 440 | 480 | 490 | 700)
 }
 
-/// Maçları sınırlı eşzamanlılıkla indirir, giriş sırasını korur.
-async fn load_matches(
-    app: &AppState,
-    key: &str,
-    regional: &str,
-    ids: &[String],
-) -> Vec<(String, Value)> {
-    let fetched: Vec<(String, Value)> = stream::iter(ids.iter().cloned())
-        .map(|match_id| async move {
-            load_match(app, key, regional, &match_id)
-                .await
-                .map(|value| (match_id, value))
-        })
-        .buffer_unordered(MATCH_CONCURRENCY)
-        .filter_map(|item| async move { item })
-        .collect()
-        .await;
-
-    let mut by_id: HashMap<String, Value> = fetched.into_iter().collect();
-    ids.iter()
-        .filter_map(|match_id| by_id.remove(match_id).map(|value| (match_id.clone(), value)))
-        .collect()
-}
-
-fn pick_solo_entry(entries: &Value) -> Option<&Value> {
-    let array = entries.as_array()?;
-
-    array
-        .iter()
-        .find(|entry| entry.get("queueType").and_then(|value| value.as_str()) == Some("RANKED_SOLO_5x5"))
-        .or_else(|| {
-            array.iter().find(|entry| {
-                entry.get("queueType").and_then(|value| value.as_str()) == Some("RANKED_FLEX_SR")
-            })
-        })
-        .or_else(|| array.first())
+fn pick_solo_entry(stats: &Value) -> Option<&Value> {
+    queue_entry(
+        stats,
+        &["RANKED_SOLO_5x5", "JADE_RANKED_SOLO_5x5", "RANKED_FLEX_SR"],
+    )
 }
 
 fn apply_scout(card: &mut PlayerCard, scout: &ScoutCache) {
@@ -419,14 +339,28 @@ fn title_case(value: &str) -> String {
     }
 }
 
-fn participant_for<'a>(match_json: &'a Value, puuid: &str) -> Option<&'a Value> {
-    match_json
-        .pointer("/info/participants")
-        .and_then(|value| value.as_array())
-        .and_then(|participants| {
-            participants.iter().find(|participant| {
-                participant.get("puuid").and_then(|value| value.as_str()) == Some(puuid)
-            })
+fn lcu_participant<'a>(game: &'a Value, puuid: &str) -> Option<&'a Value> {
+    let participant_id = game
+        .get("participantIdentities")?
+        .as_array()?
+        .iter()
+        .find(|identity| {
+            identity
+                .pointer("/player/puuid")
+                .and_then(|value| value.as_str())
+                == Some(puuid)
+        })?
+        .get("participantId")?
+        .as_i64()?;
+
+    game.get("participants")?
+        .as_array()?
+        .iter()
+        .find(|participant| {
+            participant
+                .get("participantId")
+                .and_then(|value| value.as_i64())
+                == Some(participant_id)
         })
 }
 
@@ -436,14 +370,6 @@ pub async fn recent_matches(
     count: Option<u32>,
 ) -> Result<Vec<MatchSummary>, String> {
     let app = state.inner();
-    let settings = app.config.get();
-
-    if settings.riot_api_key.trim().is_empty() {
-        return Err(
-            "Riot API anahtarı ayarlanmamış. Ayarlar sekmesinden ekleyebilirsin.".to_string(),
-        );
-    }
-
     let summoner = app
         .lcu
         .current_summoner()
@@ -456,84 +382,747 @@ pub async fn recent_matches(
         .ok_or_else(|| "PUUID bulunamadı. League istemcisi açık mı?".to_string())?
         .to_string();
 
-    let regional = Riot::regional(&settings.platform);
     let limit = count.unwrap_or(20).clamp(1, 50);
-
-    let ids = match_ids(app, &settings.riot_api_key, regional, &puuid, limit)
+    let history = app
+        .lcu
+        .match_history(&puuid, 0, limit)
         .await
-        .ok_or_else(|| "Maç listesi alınamadı. API anahtarını kontrol et.".to_string())?;
+        .map_err(|error| error.to_string())?;
 
-    if ids.is_empty() {
-        return Ok(Vec::new());
+    // Özet listede rol bilgisi yok; oyun detayından tamamla (en fazla 6 eşzamanlı).
+    let mut summaries: Vec<MatchSummary> = history_games(&history)
+        .iter()
+        .take(limit as usize)
+        .filter_map(|game| parse_match_summary(game, &puuid))
+        .collect();
+
+    let game_ids: Vec<i64> = summaries
+        .iter()
+        .filter(|summary| is_summoners_rift(summary.queue_id))
+        .filter_map(|summary| summary.match_id.parse::<i64>().ok())
+        .collect();
+
+    let roles: Vec<(i64, Option<String>)> = futures::stream::iter(game_ids)
+        .map(|game_id| {
+            let app = app;
+            let puuid = puuid.clone();
+
+            async move {
+                let role = match app.lcu.game_detail(game_id).await {
+                    Ok(detail) => lcu_participant(&detail, &puuid)
+                        .and_then(|participant| role_from_timeline(participant.get("timeline"))),
+                    Err(_) => None,
+                };
+
+                (game_id, role)
+            }
+        })
+        .buffered(6)
+        .collect()
+        .await;
+
+    let roles: HashMap<i64, Option<String>> = roles.into_iter().collect();
+
+    for summary in &mut summaries {
+        if let Ok(game_id) = summary.match_id.parse::<i64>() {
+            if let Some(role) = roles.get(&game_id) {
+                summary.role = role.clone();
+            }
+        }
     }
 
-    let matches = load_matches(app, &settings.riot_api_key, regional, &ids).await;
+    let names = queue_names(app).await;
+    for summary in &mut summaries {
+        summary.queue_name = names.get(&summary.queue_id).cloned();
+    }
 
-    Ok(matches
-        .iter()
-        .filter_map(|(match_id, match_json)| parse_match_summary(match_id, match_json, &puuid))
-        .collect())
+    Ok(summaries)
 }
 
-fn parse_match_summary(match_id: &str, match_json: &Value, puuid: &str) -> Option<MatchSummary> {
-    let info = match_json.get("info")?;
-    let participant = participant_for(match_json, puuid)?;
+/// Kuyruk adları istemciden gelir ve dile göre değişir; bir gün cache'lenir.
+async fn queue_names(app: &AppState) -> HashMap<i64, String> {
+    const QUEUE_NAMES_TTL_SECS: i64 = 86_400;
+    const CACHE_KEY: &str = "queues:v1";
 
-    let cs = participant
+    if let Some(cached) = app.db.kv_get(CACHE_KEY, QUEUE_NAMES_TTL_SECS) {
+        if let Ok(map) = serde_json::from_str::<HashMap<i64, String>>(&cached) {
+            return map;
+        }
+    }
+
+    let Ok(list) = app.lcu.queues().await else {
+        return HashMap::new();
+    };
+
+    let mut map = HashMap::new();
+    for queue in list.as_array().into_iter().flatten() {
+        let id = queue.get("id").and_then(|value| value.as_i64());
+        let name = queue.get("name").and_then(|value| value.as_str());
+
+        if let (Some(id), Some(name)) = (id, name) {
+            map.insert(id, name.to_string());
+        }
+    }
+
+    if let Ok(serialized) = serde_json::to_string(&map) {
+        let _ = app.db.kv_set(CACHE_KEY, &serialized);
+    }
+
+    map
+}
+
+/// Hesap özeti için taranan maç sayısı.
+const OVERVIEW_MATCH_COUNT: u32 = 50;
+/// LP geçmişinde gösterilen kayıt sayısı.
+const LP_HISTORY_LIMIT: u32 = 12;
+
+#[tauri::command]
+pub async fn account_overview(state: State<'_, AppState>) -> Result<AccountOverview, String> {
+    let app = state.inner();
+    let summoner = app
+        .lcu
+        .current_summoner()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let puuid = summoner
+        .get("puuid")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "PUUID bulunamadı. League istemcisi açık mı?".to_string())?
+        .to_string();
+
+    let game_name = summoner
+        .get("gameName")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let tag_line = summoner
+        .get("tagLine")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let info = SummonerInfo {
+        name: if tag_line.is_empty() {
+            game_name
+        } else {
+            format!("{}#{}", game_name, tag_line)
+        },
+        level: summoner.get("summonerLevel").and_then(|value| value.as_i64()),
+        icon_id: summoner
+            .get("profileIconId")
+            .and_then(|value| value.as_i64()),
+    };
+
+    let stats = app.lcu.ranked_stats(&puuid).await.ok();
+
+    let solo_entry = stats.as_ref().and_then(|stats| {
+        queue_entry(
+            stats,
+            &["RANKED_SOLO_5x5", "JADE_RANKED_SOLO_5x5"],
+        )
+    });
+    let flex_entry = stats
+        .as_ref()
+        .and_then(|stats| queue_entry(stats, &["RANKED_FLEX_SR"]));
+
+    if let Some(entry) = solo_entry {
+        record_lp(app, &puuid, "solo", entry);
+    }
+    if let Some(entry) = flex_entry {
+        record_lp(app, &puuid, "flex", entry);
+    }
+
+    let ranks = vec![
+        rank_view("solo", "Dereceli Tek/Çift", solo_entry),
+        rank_view("flex", "Dereceli Esnek", flex_entry),
+    ];
+
+    // LP geçmişi: solo varsa solo, yoksa flex.
+    let lp_queue = if solo_entry.is_some() { "solo" } else { "flex" };
+    let lp_history = lp_points(app, &puuid, lp_queue);
+
+    let mut champions = Vec::new();
+    let mut recent_games = 0;
+    let mut recent_wins = 0;
+    let mut recent_form = Vec::new();
+
+    if let Ok(history) = app.lcu.match_history(&puuid, 0, OVERVIEW_MATCH_COUNT).await {
+        let mastery = mastery_points(app, &puuid).await;
+        champions = champion_stats(&history, &puuid, &mastery);
+
+        for game in history_games(&history) {
+            let queue_id = game
+                .get("queueId")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
+            if !is_summoners_rift(queue_id) {
+                continue;
+            }
+
+            let Some(participant) = lcu_participant(game, &puuid) else {
+                continue;
+            };
+
+            let win = participant
+                .pointer("/stats/win")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+
+            recent_games += 1;
+            if win {
+                recent_wins += 1;
+            }
+            if recent_form.len() < 20 {
+                recent_form.push(win);
+            }
+        }
+    }
+
+    let streak = streak_of(&recent_form);
+
+    Ok(AccountOverview {
+        summoner: info,
+        ranks,
+        lp_history,
+        champions,
+        recent_games,
+        recent_wins,
+        recent_winrate: rate(recent_wins, recent_games),
+        recent_form,
+        streak,
+    })
+}
+
+#[tauri::command]
+pub async fn lobby_view(state: State<'_, AppState>) -> Result<Option<LobbyView>, String> {
+    let app = state.inner();
+
+    let lobby = match app.lcu.lobby().await {
+        Ok(Some(lobby)) => lobby,
+        Ok(None) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+
+    let queue_id = lobby
+        .pointer("/gameConfig/queueId")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let queue_name = queue_names(app).await.get(&queue_id).cloned();
+
+    let summoner = app.lcu.current_summoner().await.ok();
+    let self_puuid = summoner
+        .as_ref()
+        .and_then(|value| value.get("puuid"))
+        .and_then(|value| value.as_str())
+        .map(String::from);
+    let self_name = summoner
+        .as_ref()
+        .and_then(|value| value.get("gameName"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let self_tag = summoner
+        .as_ref()
+        .and_then(|value| value.get("tagLine"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let members_json: Vec<Value> = lobby
+        .get("members")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let members = join_all(members_json.into_iter().map(|member| {
+        let self_puuid = self_puuid.clone();
+        let self_name = self_name.clone();
+        let self_tag = self_tag.clone();
+
+        async move {
+            let puuid = member
+                .get("puuid")
+                .and_then(|value| value.as_str())
+                .map(String::from);
+            let summoner_id = member.get("summonerId").and_then(|value| value.as_i64());
+            let is_self = puuid.is_some() && puuid == self_puuid;
+
+            let mut name = String::new();
+            if is_self {
+                name = if self_tag.is_empty() {
+                    self_name.clone()
+                } else {
+                    format!("{}#{}", self_name, self_tag)
+                };
+            } else if let Some(value) = member.get("summonerName").and_then(|value| value.as_str()) {
+                name = value.to_string();
+            }
+
+            let mut level = member
+                .get("summonerLevel")
+                .and_then(|value| value.as_i64())
+                .filter(|value| *value > 0);
+            let mut icon_id = member
+                .get("summonerIconId")
+                .and_then(|value| value.as_i64())
+                .filter(|value| *value > 0);
+
+            if name.is_empty() {
+                if let Some(summoner_id) = summoner_id {
+                    if let Ok(info) = app.lcu.summoner_by_id(summoner_id).await {
+                        let game_name = info
+                            .get("gameName")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        let tag = info
+                            .get("tagLine")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+
+                        if !game_name.is_empty() {
+                            name = format!("{}#{}", game_name, tag);
+                        }
+                        level = level.or_else(|| {
+                            info.get("summonerLevel")
+                                .and_then(|value| value.as_i64())
+                                .filter(|value| *value > 0)
+                        });
+                        icon_id = icon_id.or_else(|| {
+                            info.get("profileIconId")
+                                .and_then(|value| value.as_i64())
+                                .filter(|value| *value > 0)
+                        });
+                    }
+                }
+            }
+
+            if name.is_empty() {
+                name = "Gizli oyuncu".to_string();
+            }
+
+            let mut tier = None;
+            let mut division = None;
+            let mut lp = None;
+            let mut wins = None;
+            let mut losses = None;
+            let mut winrate = None;
+
+            if let Some(puuid) = puuid.as_deref() {
+                if let Ok(stats) = app.lcu.ranked_stats(puuid).await {
+                    if let Some(entry) = pick_solo_entry(&stats) {
+                        let tier_raw = entry
+                            .get("tier")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        tier = Some(tier_name(tier_raw).to_string());
+                        division = entry
+                            .get("division")
+                            .and_then(|value| value.as_str())
+                            .filter(|value| !value.is_empty() && *value != "NA")
+                            .map(title_case);
+                        lp = entry.get("leaguePoints").and_then(|value| value.as_i64());
+                        wins = entry.get("wins").and_then(|value| value.as_i64());
+                        losses = entry.get("losses").and_then(|value| value.as_i64());
+                        winrate = match (wins, losses) {
+                            (Some(wins), Some(losses)) if wins + losses > 0 => {
+                                Some(wins as f64 / (wins + losses) as f64 * 100.0)
+                            }
+                            _ => None,
+                        };
+                    }
+                }
+            }
+
+            let position = member
+                .get("firstPositionPreference")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty() && *value != "UNSELECTED" && *value != "FILL")
+                .map(String::from);
+
+            LobbyMember {
+                name,
+                level,
+                icon_id,
+                tier,
+                division,
+                lp,
+                wins,
+                losses,
+                winrate,
+                position,
+                is_self,
+            }
+        }
+    }))
+    .await;
+
+    Ok(Some(LobbyView {
+        queue_id,
+        queue_name,
+        members,
+    }))
+}
+
+fn queue_entry<'a>(stats: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    let queue_map = stats.get("queueMap")?;
+
+    keys.iter()
+        .filter_map(|key| queue_map.get(key))
+        .find(|entry| {
+            entry
+                .get("tier")
+                .and_then(|value| value.as_str())
+                .is_some_and(|tier| !tier.is_empty())
+        })
+}
+
+fn rank_view(queue: &str, label: &str, entry: Option<&Value>) -> RankView {
+    let Some(entry) = entry else {
+        return RankView {
+            queue: queue.to_string(),
+            label: label.to_string(),
+            tier: None,
+            division: None,
+            lp: None,
+            wins: 0,
+            losses: 0,
+            winrate: None,
+            provisional: false,
+        };
+    };
+
+    let tier_raw = entry
+        .get("tier")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let wins = entry.get("wins").and_then(|value| value.as_i64()).unwrap_or(0);
+    let losses = entry
+        .get("losses")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+
+    RankView {
+        queue: queue.to_string(),
+        label: label.to_string(),
+        tier: Some(tier_name(tier_raw).to_string()),
+        division: entry
+            .get("division")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty() && *value != "NA")
+            .map(title_case),
+        lp: entry
+            .get("leaguePoints")
+            .and_then(|value| value.as_i64()),
+        wins,
+        losses,
+        winrate: rate(wins, wins + losses),
+        provisional: entry
+            .get("isProvisional")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+    }
+}
+
+/// Derece değişimini yerelde kaydeder. LCU geçmiş vermediği için LP geçmişi
+/// Tlas'ın kendi gözlemlerinden oluşur.
+fn record_lp(app: &AppState, puuid: &str, queue: &str, entry: &Value) {
+    let Some(tier) = entry
+        .get("tier")
+        .and_then(|value| value.as_str())
+        .filter(|tier| !tier.is_empty())
+    else {
+        return;
+    };
+
+    let division = entry
+        .get("division")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty() && *value != "NA")
+        .map(String::from);
+    let lp = entry
+        .get("leaguePoints")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let wins = entry.get("wins").and_then(|value| value.as_i64()).unwrap_or(0);
+    let losses = entry
+        .get("losses")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+
+    if let Some(previous) = app.db.lp_last(puuid, queue) {
+        let unchanged = previous.tier == tier
+            && previous.division == division
+            && previous.lp == lp
+            && previous.wins == wins
+            && previous.losses == losses;
+
+        if unchanged {
+            return;
+        }
+    }
+
+    let snapshot = LpSnapshot {
+        ts: chrono::Utc::now().timestamp(),
+        tier: tier.to_string(),
+        division,
+        lp,
+        wins,
+        losses,
+    };
+
+    let _ = app.db.lp_push(puuid, queue, &snapshot);
+}
+
+fn lp_points(app: &AppState, puuid: &str, queue: &str) -> Vec<LpPoint> {
+    let snapshots = app.db.lp_recent(puuid, queue, LP_HISTORY_LIMIT);
+
+    let mut points: Vec<LpPoint> = snapshots
+        .iter()
+        .map(|snapshot| LpPoint {
+            ts: snapshot.ts,
+            tier: tier_name(&snapshot.tier).to_string(),
+            division: snapshot.division.clone(),
+            lp: snapshot.lp,
+            delta: None,
+        })
+        .collect();
+
+    // En yeniden eskiye sıralı: bir önceki kayıtla farkı hesapla.
+    for index in 0..points.len() {
+        let Some(next) = snapshots.get(index + 1) else {
+            break;
+        };
+
+        if snapshots[index].tier == next.tier && snapshots[index].division == next.division {
+            points[index].delta = Some(points[index].lp - points[index + 1].lp);
+        }
+    }
+
+    points
+}
+
+async fn mastery_points(app: &AppState, puuid: &str) -> HashMap<i64, i64> {
+    let mut map = HashMap::new();
+
+    if let Ok(list) = app.lcu.champion_mastery(puuid).await {
+        for entry in list.as_array().into_iter().flatten() {
+            let champion_id = entry
+                .get("championId")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
+            let points = entry
+                .get("championPoints")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
+
+            if champion_id > 0 {
+                map.insert(champion_id, points);
+            }
+        }
+    }
+
+    map
+}
+
+fn champion_stats(
+    history: &Value,
+    puuid: &str,
+    mastery: &HashMap<i64, i64>,
+) -> Vec<ChampionStat> {
+    #[derive(Default)]
+    struct Acc {
+        games: i64,
+        wins: i64,
+        kills: i64,
+        deaths: i64,
+        assists: i64,
+    }
+
+    let mut acc: HashMap<i64, Acc> = HashMap::new();
+
+    for game in history_games(history) {
+        let queue_id = game
+            .get("queueId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        if !is_summoners_rift(queue_id) {
+            continue;
+        }
+
+        let Some(participant) = lcu_participant(game, puuid) else {
+            continue;
+        };
+
+        let champion_id = participant
+            .get("championId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        if champion_id == 0 {
+            continue;
+        }
+
+        let stats = participant.get("stats");
+        let entry = acc.entry(champion_id).or_default();
+
+        entry.games += 1;
+        if stats
+            .and_then(|value| value.get("win"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            entry.wins += 1;
+        }
+        entry.kills += stats
+            .and_then(|value| value.get("kills"))
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        entry.deaths += stats
+            .and_then(|value| value.get("deaths"))
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        entry.assists += stats
+            .and_then(|value| value.get("assists"))
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+    }
+
+    let mut champions: Vec<ChampionStat> = acc
+        .into_iter()
+        .map(|(champion_id, entry)| ChampionStat {
+            champion_id,
+            games: entry.games,
+            wins: entry.wins,
+            winrate: entry.wins as f64 / entry.games.max(1) as f64 * 100.0,
+            kda: round2(
+                (entry.kills + entry.assists) as f64 / entry.deaths.max(1) as f64,
+            ),
+            points: mastery.get(&champion_id).copied(),
+        })
+        .collect();
+
+    champions.sort_by(|left, right| {
+        right
+            .games
+            .cmp(&left.games)
+            .then_with(|| right.winrate.total_cmp(&left.winrate))
+    });
+    champions.truncate(6);
+
+    champions
+}
+
+fn streak_of(form: &[bool]) -> i64 {
+    let Some(first) = form.first() else {
+        return 0;
+    };
+
+    let mut count = 0i64;
+    for win in form {
+        if win != first {
+            break;
+        }
+        count += 1;
+    }
+
+    if *first {
+        count
+    } else {
+        -count
+    }
+}
+
+fn rate(part: i64, total: i64) -> Option<f64> {
+    (total > 0).then(|| round2(part as f64 / total as f64 * 100.0))
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn parse_match_summary(game: &Value, puuid: &str) -> Option<MatchSummary> {
+    let participant = lcu_participant(game, puuid)?;
+    let stats = participant.get("stats")?;
+
+    let raw_duration = game
+        .get("gameDuration")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let duration_secs = if raw_duration > 100_000 {
+        raw_duration / 1_000
+    } else {
+        raw_duration
+    };
+
+    let cs = stats
         .get("totalMinionsKilled")
         .and_then(|value| value.as_i64())
         .unwrap_or(0)
-        + participant
+        + stats
             .get("neutralMinionsKilled")
             .and_then(|value| value.as_i64())
             .unwrap_or(0);
 
     Some(MatchSummary {
-        match_id: match_id.to_string(),
-        champion_name: participant
-            .get("championName")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Unknown")
+        match_id: game
+            .get("gameId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
             .to_string(),
+        champion_name: String::new(),
         champion_id: participant
             .get("championId")
             .and_then(|value| value.as_i64())
             .unwrap_or(0),
-        win: participant
+        win: stats
             .get("win")
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
-        kills: participant
+        kills: stats
             .get("kills")
             .and_then(|value| value.as_i64())
             .unwrap_or(0),
-        deaths: participant
+        deaths: stats
             .get("deaths")
             .and_then(|value| value.as_i64())
             .unwrap_or(0),
-        assists: participant
+        assists: stats
             .get("assists")
             .and_then(|value| value.as_i64())
             .unwrap_or(0),
         cs,
-        duration_secs: info
-            .get("gameDuration")
-            .and_then(|value| value.as_i64())
-            .unwrap_or(0),
-        queue_id: info
+        duration_secs,
+        queue_id: game
             .get("queueId")
             .and_then(|value| value.as_i64())
             .unwrap_or(0),
-        game_creation: info
+        queue_name: None,
+        game_creation: game
             .get("gameCreation")
             .and_then(|value| value.as_i64())
             .unwrap_or(0),
-        role: participant
-            .get("teamPosition")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .map(String::from),
+        role: role_from_timeline(participant.get("timeline")),
     })
+}
+
+fn role_from_timeline(timeline: Option<&Value>) -> Option<String> {
+    let timeline = timeline?;
+    let lane = timeline.get("lane").and_then(|value| value.as_str())?;
+    let role = timeline
+        .get("role")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+
+    let position = match (lane, role) {
+        ("JUNGLE", _) => "JUNGLE",
+        ("TOP", _) => "TOP",
+        ("MIDDLE", _) => "MIDDLE",
+        ("BOTTOM", "DUO_SUPPORT") | ("BOTTOM", "SUPPORT") => "UTILITY",
+        ("BOTTOM", _) => "BOTTOM",
+        _ => return None,
+    };
+
+    Some(position.to_string())
 }
 
 #[tauri::command]
@@ -558,13 +1147,16 @@ mod tests {
 
     #[test]
     fn prefers_solo_queue_entry() {
-        let entries = json!([
-            { "queueType": "RANKED_FLEX_SR", "tier": "GOLD" },
-            { "queueType": "RANKED_SOLO_5x5", "tier": "PLATINUM" }
-        ]);
+        let stats = json!({
+            "queueMap": {
+                "RANKED_FLEX_SR": { "tier": "GOLD", "division": "I" },
+                "RANKED_SOLO_5x5": { "tier": "PLATINUM", "division": "II" },
+                "RANKED_TFT": { "tier": "" }
+            }
+        });
 
         assert_eq!(
-            pick_solo_entry(&entries)
+            pick_solo_entry(&stats)
                 .and_then(|entry| entry.get("tier"))
                 .and_then(|value| value.as_str()),
             Some("PLATINUM")
@@ -572,11 +1164,16 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_first_entry() {
-        let entries = json!([{ "queueType": "RANKED_TFT", "tier": "DIAMOND" }]);
+    fn falls_back_to_flex_queue() {
+        let stats = json!({
+            "queueMap": {
+                "RANKED_SOLO_5x5": { "tier": "" },
+                "RANKED_FLEX_SR": { "tier": "DIAMOND", "division": "IV" }
+            }
+        });
 
         assert_eq!(
-            pick_solo_entry(&entries)
+            pick_solo_entry(&stats)
                 .and_then(|entry| entry.get("tier"))
                 .and_then(|value| value.as_str()),
             Some("DIAMOND")
@@ -585,32 +1182,53 @@ mod tests {
 
     #[test]
     fn parses_match_summary_for_player() {
-        let match_json = json!({
-            "info": {
-                "gameDuration": 1_800,
-                "queueId": 420,
-                "gameCreation": 1_700_000_000_000_i64,
-                "participants": [{
-                    "puuid": "p1",
-                    "championName": "Ahri",
-                    "championId": 103,
+        let game = json!({
+            "gameId": 1754219635_i64,
+            "gameDuration": 1_800,
+            "queueId": 420,
+            "gameCreation": 1_700_000_000_000_i64,
+            "participantIdentities": [{
+                "participantId": 1,
+                "player": { "puuid": "p1" }
+            }],
+            "participants": [{
+                "participantId": 1,
+                "championId": 103,
+                "timeline": { "lane": "MIDDLE", "role": "SOLO" },
+                "stats": {
                     "win": true,
                     "kills": 7,
                     "deaths": 2,
                     "assists": 9,
                     "totalMinionsKilled": 180,
-                    "neutralMinionsKilled": 12,
-                    "teamPosition": "MIDDLE"
-                }]
-            }
+                    "neutralMinionsKilled": 12
+                }
+            }]
         });
 
-        let summary = parse_match_summary("TR1_1", &match_json, "p1").expect("summary");
+        let summary = parse_match_summary(&game, "p1").expect("summary");
 
-        assert_eq!(summary.champion_name, "Ahri");
+        assert_eq!(summary.match_id, "1754219635");
         assert_eq!(summary.cs, 192);
         assert!(summary.win);
         assert_eq!(summary.role.as_deref(), Some("MIDDLE"));
+    }
+
+    #[test]
+    fn maps_duo_support_to_utility() {
+        let timeline = json!({ "lane": "BOTTOM", "role": "DUO_SUPPORT" });
+        assert_eq!(role_from_timeline(Some(&timeline)).as_deref(), Some("UTILITY"));
+
+        let unknown = json!({ "lane": "NONE", "role": "SOLO" });
+        assert_eq!(role_from_timeline(Some(&unknown)), None);
+    }
+
+    #[test]
+    fn counts_only_rift_queues() {
+        assert!(is_summoners_rift(420));
+        assert!(is_summoners_rift(440));
+        assert!(!is_summoners_rift(450));
+        assert!(!is_summoners_rift(1700));
     }
 
     #[test]
