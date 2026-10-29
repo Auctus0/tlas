@@ -51,7 +51,7 @@
   });
   let champions = $state<Record<number, ChampionInfo>>({});
   let ddragonVersion = $state("16.21.1");
-  let appVersion = $state("0.1.0");
+  let appVersion = $state(__APP_VERSION__);
 
   let statusLoading = $state(true);
   let champLoading = $state(false);

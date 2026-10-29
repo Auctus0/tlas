@@ -1,12 +1,22 @@
+// @ts-expect-error type error without @types/node package
+import { readFileSync } from "node:fs";
+
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+
 const host = process.env.TAURI_DEV_HOST;
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [sveltekit()],
+
+  // Sürüm tek yerde (package.json) tutulur; tarayıcı önizlemesinde de doğru görünür.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
