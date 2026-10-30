@@ -1,11 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import type {
   AccountOverview,
   ChampSelectView,
   LcuStatus,
+  LiveGameView,
   LobbyView,
+  MatchDetail,
   MatchSummary,
+  MetaReport,
+  PersonalBuild,
   Settings,
 } from "$lib/types";
 
@@ -34,6 +39,38 @@ export const getRecentMatches = async (count = 20): Promise<MatchSummary[]> =>
     ? (await loadPreview()).previewMatches.slice(0, count)
     : invoke<MatchSummary[]>("recent_matches", { count });
 
+export const getMatchDetail = async (matchId: string): Promise<MatchDetail> =>
+  preview
+    ? (await loadPreview()).previewMatchDetail(matchId)
+    : invoke<MatchDetail>("match_detail", { gameId: Number(matchId) });
+
+export const getPersonalBuild = async (championId: number): Promise<PersonalBuild> =>
+  preview
+    ? (await loadPreview()).previewBuild(championId)
+    : invoke<PersonalBuild>("personal_build", { championId });
+
+export const getLiveGame = async (): Promise<LiveGameView | null> =>
+  preview
+    ? (await loadPreview()).previewLiveGame
+    : invoke<LiveGameView | null>("live_game");
+
+export const getOpggMeta = async (
+  champion: string,
+  position: string,
+): Promise<MetaReport> =>
+  preview
+    ? (await loadPreview()).previewMeta(champion, position)
+    : invoke<MetaReport>("opgg_meta", { champion, position });
+
+export const openExternal = async (url: string): Promise<void> => {
+  if (preview) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+
+  await openUrl(url);
+};
+
 export const getAccountOverview = async (): Promise<AccountOverview> =>
   preview
     ? (await loadPreview()).previewOverview
@@ -43,7 +80,9 @@ export const getLobby = async (): Promise<LobbyView | null> =>
   preview ? (await loadPreview()).previewLobby : invoke<LobbyView | null>("lobby_view");
 
 export const getSettings = async (): Promise<Settings> =>
-  preview ? { autoUpdate: true } : invoke<Settings>("get_settings");
+  preview
+    ? { autoUpdate: true, experimentalMeta: false }
+    : invoke<Settings>("get_settings");
 
 export const saveSettings = async (settings: Settings): Promise<void> => {
   if (preview) return;

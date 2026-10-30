@@ -6,21 +6,35 @@
   import { relaunch } from "@tauri-apps/plugin-process";
 
   import MatchRow from "$lib/components/MatchRow.svelte";
+  import MatchDetail from "$lib/components/MatchDetail.svelte";
   import PlayerCard from "$lib/components/PlayerCard.svelte";
+  import DraftComp from "$lib/components/DraftComp.svelte";
+  import Sparkline from "$lib/components/Sparkline.svelte";
   import {
     clearCache,
     getAccountOverview,
     getChampSelect,
+    getLiveGame,
     getLobby,
+    getMatchDetail,
+    getOpggMeta,
+    getPersonalBuild,
     getRecentMatches,
     getSettings,
     getStatus,
+    openExternal,
     saveSettings,
   } from "$lib/api";
   import {
     championIcon,
+    championOpggName,
     errorText,
+    formatCompact,
+    itemIcon,
     lpDelta,
+    metaTier,
+    opggChampionUrl,
+    opggLane,
     percent,
     phaseText,
     profileIcon,
@@ -33,8 +47,12 @@
     ChampionInfo,
     ChampSelectView,
     LcuStatus,
+    LiveGameView,
     LobbyView,
+    MatchDetail as MatchDetailData,
     MatchSummary,
+    MetaReport,
+    PersonalBuild,
     Settings,
   } from "$lib/types";
 
@@ -46,10 +64,19 @@
   let matches = $state<MatchSummary[]>([]);
   let overview = $state<AccountOverview | null>(null);
   let lobby = $state<LobbyView | null>(null);
+  let liveGame = $state<LiveGameView | null>(null);
+  let matchDetail = $state<MatchDetailData | null>(null);
+  let selectedMatchId = $state<string | null>(null);
+  let build = $state<PersonalBuild | null>(null);
+  let buildChampionId = $state<number | null>(null);
+  let meta = $state<MetaReport | null>(null);
+  let metaPosition = $state("mid");
   let settings = $state<Settings>({
     autoUpdate: true,
+    experimentalMeta: false,
   });
   let champions = $state<Record<number, ChampionInfo>>({});
+  let items = $state<Record<number, string>>({});
   let ddragonVersion = $state("16.21.1");
   let appVersion = $state(__APP_VERSION__);
 
@@ -59,6 +86,12 @@
   let matchesLoaded = $state(false);
   let matchesError = $state("");
   let homeLoading = $state(false);
+  let matchDetailLoading = $state(false);
+  let matchDetailError = $state("");
+  let buildLoading = $state(false);
+  let buildError = $state("");
+  let metaLoading = $state(false);
+  let metaError = $state("");
   let toast = $state("");
   let updateInfo = $state<{ version: string; body: string | null } | null>(null);
   let pendingUpdate = $state<Update | null>(null);
@@ -70,7 +103,11 @@
   let lastDraftFetch = 0;
   let draftFetchedAt = 0;
   let lastHomeFetch = 0;
+  let lastLiveFetch = 0;
   let homeRetried = false;
+  let matchRequest = 0;
+  let buildRequest = 0;
+  let metaRequest = 0;
   let tick = $state(0);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -96,7 +133,7 @@
   }
 
   async function loadChampions() {
-    const cached = localStorage.getItem("tlas:champions");
+    const cached = localStorage.getItem("tlas:champions:v2");
 
     if (cached) {
       try {
@@ -109,6 +146,7 @@
         if (Date.now() - parsed.at < 7 * 86_400_000) {
           champions = parsed.map;
           ddragonVersion = parsed.version;
+          loadItems(parsed.version);
           return;
         }
       } catch {
@@ -131,18 +169,46 @@
         key: string;
         id: string;
         name: string;
+        tags?: string[];
+        info?: { attack: number; magic: number; defense: number; difficulty: number };
       }>) {
-        map[Number(champion.key)] = { id: champion.id, name: champion.name };
+        map[Number(champion.key)] = {
+          id: champion.id,
+          name: champion.name,
+          tags: champion.tags,
+          info: champion.info,
+        };
       }
 
       ddragonVersion = version;
       champions = map;
       localStorage.setItem(
-        "tlas:champions",
+        "tlas:champions:v2",
         JSON.stringify({ at: Date.now(), version, map }),
       );
+
+      loadItems(version);
     } catch {
       // Offline: placeholder ikonlar kalır.
+    }
+  }
+
+  async function loadItems(version: string) {
+    try {
+      const data = await fetch(
+        `https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/item.json`,
+      ).then((response) => response.json());
+
+      const map: Record<number, string> = {};
+      for (const [id, item] of Object.entries(
+        data.data as Record<string, { name: string }>,
+      )) {
+        map[Number(id)] = item.name;
+      }
+
+      items = map;
+    } catch {
+      // Item adları yoksa yalnızca kimlik gösterilir.
     }
   }
 
@@ -194,6 +260,7 @@
     if (!status?.connected) {
       overview = null;
       lobby = null;
+      liveGame = null;
       return;
     }
 
@@ -204,13 +271,15 @@
     homeLoading = true;
 
     try {
-      const [nextOverview, nextLobby] = await Promise.all([
+      const [nextOverview, nextLobby, nextLive] = await Promise.all([
         getAccountOverview().catch(() => null),
         getLobby().catch(() => null),
+        getLiveGame().catch(() => null),
       ]);
 
       overview = nextOverview;
       lobby = nextLobby;
+      liveGame = nextLive;
       lastHomeFetch = Date.now();
 
       // LCU geçmişi geç yükleyebilir; boş geldiyse bir kez daha dene.
@@ -224,6 +293,128 @@
       }
     } finally {
       homeLoading = false;
+    }
+  }
+
+  async function loadLive(force = false) {
+    const now = Date.now();
+    if (!force && now - lastLiveFetch < 12_000) return;
+    lastLiveFetch = now;
+
+    try {
+      liveGame = await getLiveGame();
+    } catch {
+      liveGame = null;
+    }
+  }
+
+  async function openMatch(matchId: string) {
+    if (selectedMatchId === matchId) {
+      matchRequest += 1;
+      selectedMatchId = null;
+      matchDetail = null;
+      matchDetailError = "";
+      matchDetailLoading = false;
+      return;
+    }
+
+    selectedMatchId = matchId;
+    matchDetail = null;
+    matchDetailError = "";
+    matchDetailLoading = true;
+
+    const request = ++matchRequest;
+
+    try {
+      const detail = await getMatchDetail(matchId);
+      if (request !== matchRequest) return;
+      matchDetail = detail;
+    } catch (error) {
+      if (request !== matchRequest) return;
+      matchDetailError = errorText(error, "Maç detayı alınamadı.");
+    } finally {
+      if (request === matchRequest) matchDetailLoading = false;
+    }
+  }
+
+  function closeBuild() {
+    buildRequest += 1;
+    metaRequest += 1;
+    buildChampionId = null;
+    build = null;
+    buildError = "";
+    meta = null;
+    metaError = "";
+  }
+
+  async function openBuild(championId: number) {
+    if (buildChampionId === championId) {
+      closeBuild();
+      return;
+    }
+
+    buildRequest += 1;
+    const request = buildRequest;
+    buildChampionId = championId;
+    build = null;
+    buildError = "";
+    metaRequest += 1;
+    meta = null;
+    metaError = "";
+    buildLoading = true;
+
+    try {
+      const next = await getPersonalBuild(championId);
+      if (request !== buildRequest) return;
+
+      build = next;
+      const lane = opggLane(next.position);
+      if (lane) metaPosition = lane;
+    } catch (error) {
+      if (request !== buildRequest) return;
+      buildError = errorText(error, "Kişisel build alınamadı.");
+    } finally {
+      if (request === buildRequest) buildLoading = false;
+    }
+  }
+
+  async function fetchMeta() {
+    if (buildChampionId == null) return;
+
+    const info = champions[buildChampionId];
+    if (!info) {
+      metaError = "Şampiyon bilgisi yüklenmedi.";
+      return;
+    }
+
+    metaLoading = true;
+    metaError = "";
+    metaRequest += 1;
+    const request = metaRequest;
+
+    try {
+      const next = await getOpggMeta(championOpggName(info.name), metaPosition);
+      if (request !== metaRequest) return;
+      meta = next;
+    } catch (error) {
+      if (request !== metaRequest) return;
+      meta = null;
+      metaError = errorText(error, "Meta verisi alınamadı.");
+    } finally {
+      if (request === metaRequest) metaLoading = false;
+    }
+  }
+
+  async function openOpgg() {
+    if (buildChampionId == null) return;
+
+    const info = champions[buildChampionId];
+    if (!info) return;
+
+    try {
+      await openExternal(opggChampionUrl(info.name, build?.position));
+    } catch (error) {
+      showToast(`Bağlantı açılamadı: ${errorText(error, "tarayıcı açılamadı")}`);
     }
   }
 
@@ -261,6 +452,9 @@
       matches = [];
       matchesLoaded = false;
       champ = null;
+      selectedMatchId = null;
+      matchDetail = null;
+      closeBuild();
       showToast("Önbellek temizlendi");
     } catch (error) {
       showToast(`Temizlenemedi: ${errorText(error, "önbellek silinemedi")}`);
@@ -351,6 +545,42 @@
   const enemiesHidden = $derived(
     (champ?.enemies.length ?? 0) > 0 && champ!.enemies.every((player) => player.hidden),
   );
+  const weakChampions = $derived.by(() => {
+    if (!overview) return [];
+
+    return overview.champions
+      .filter((champion) => champion.games >= 2 && champion.winrate < 45)
+      .slice(0, 3)
+      .map(
+        (champion) =>
+          champions[champion.championId]?.name ?? `Şampiyon ${champion.championId}`,
+      );
+  });
+  const weakNote = $derived(
+    weakChampions.length > 0
+      ? `Düşük galibiyet oranı: ${weakChampions.join(", ")}`
+      : "",
+  );
+  const lpSeries = $derived(
+    [...(overview?.lpHistory ?? [])].reverse().map((point) => point.lp),
+  );
+  const buildChampion = $derived(
+    buildChampionId == null ? null : (champions[buildChampionId] ?? null),
+  );
+  const liveActive = $derived(
+    phase === "InProgress" || phase === "GameStart" || phase === "Reconnect",
+  );
+
+  $effect(() => {
+    if (!liveActive) {
+      liveGame = null;
+      return;
+    }
+
+    loadLive(true);
+    const timer = setInterval(() => loadLive(true), 15_000);
+    return () => clearInterval(timer);
+  });
 
   $effect(() => {
     if (tab === "matches" && matches.length === 0 && !matchesLoading && !matchesError) {
@@ -506,6 +736,112 @@
         </div>
       </div>
 
+      {#if overview}
+        <section class="panel">
+          <div class="panel-head">
+            <span>Bugün</span>
+            <span class="head-note">
+              {overview.session.games > 0
+                ? `${overview.session.wins}G ${overview.session.losses}M`
+                : "maç yok"}
+            </span>
+          </div>
+          <div class="panel-body">
+            <div class="stat-grid">
+              <div class="stat">
+                <strong>{overview.session.games}</strong>
+                <small>Maç</small>
+              </div>
+              <div class="stat">
+                <strong>{percent(overview.session.winrate)}</strong>
+                <small>Galibiyet</small>
+              </div>
+              <div class="stat">
+                <strong>
+                  {overview.session.avgKda != null ? overview.session.avgKda.toFixed(2) : "—"}
+                </strong>
+                <small>KDA</small>
+              </div>
+              <div class="stat">
+                <strong
+                  class:ok={(overview.session.lpDelta ?? 0) > 0}
+                  class:warn={(overview.session.lpDelta ?? 0) < 0}
+                >
+                  {overview.session.lpDelta != null
+                    ? `${overview.session.lpDelta > 0 ? "+" : ""}${overview.session.lpDelta} LP`
+                    : "—"}
+                </strong>
+                <small>LP</small>
+              </div>
+            </div>
+
+            {#if overview.session.streak > 0}
+              <p class="hint">{overview.session.streak} maçlık galibiyet serisi.</p>
+            {:else if overview.session.streak < 0}
+              <p class="hint">{-overview.session.streak} maçlık mağlubiyet serisi.</p>
+            {:else if overview.session.games === 0}
+              <p class="hint">Bugün henüz maç oynanmadı.</p>
+            {/if}
+          </div>
+        </section>
+      {/if}
+
+      {#if liveGame}
+        <section class="panel">
+          <div class="panel-head">
+            <span>Canlı maç · {liveGame.queueName ?? queueName(liveGame.queueId)}</span>
+            <span class="head-note">
+              {liveGame.allies.length + liveGame.enemies.length} oyuncu
+            </span>
+          </div>
+          <div class="live-grid">
+            <div class="live-team">
+              <span class="live-title">Takımın</span>
+              {#each liveGame.allies as player (player.championId)}
+                <div class="live-row">
+                  <span class="member-icon">
+                    {#if champions[player.championId]}
+                      <img
+                        src={championIcon(champions[player.championId].id, ddragonVersion)}
+                        alt=""
+                        loading="lazy"
+                        onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                      />
+                    {/if}
+                  </span>
+                  <span class="member-name">
+                    {champions[player.championId]?.name ?? `Şampiyon ${player.championId}`}
+                  </span>
+                  <span class="member-pos">{player.displayName}</span>
+                </div>
+              {/each}
+            </div>
+
+            <div class="live-team">
+              <span class="live-title">Rakip</span>
+              {#each liveGame.enemies as player (player.championId)}
+                <div class="live-row">
+                  <span class="member-icon">
+                    {#if champions[player.championId]}
+                      <img
+                        src={championIcon(champions[player.championId].id, ddragonVersion)}
+                        alt=""
+                        loading="lazy"
+                        onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                      />
+                    {/if}
+                  </span>
+                  <span class="member-name">
+                    {champions[player.championId]?.name ?? `Şampiyon ${player.championId}`}
+                  </span>
+                  <span class="member-pos">{player.displayName}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        </section>
+      {/if}
+
       {#if lobby && lobby.members.length > 0}
         <div class="panel">
           <div class="panel-head">
@@ -584,7 +920,17 @@
         </section>
 
         <section class="panel">
-          <div class="panel-head">LP geçmişi</div>
+          <div class="panel-head">
+            <span>LP geçmişi</span>
+            {#if overview && overview.lpHistory.length >= 2}
+              <span class="head-note">son {overview.lpHistory.length} kayıt</span>
+            {/if}
+          </div>
+          {#if overview && overview.lpHistory.length >= 2}
+            <div class="spark-box">
+              <Sparkline points={lpSeries} />
+            </div>
+          {/if}
           <div class="rows">
             {#if overview && overview.lpHistory.length > 0}
               {#each overview.lpHistory as point (point.ts)}
@@ -623,7 +969,13 @@
             <span>Ustalık</span>
           </div>
           {#each overview.champions as champion (champion.championId)}
-            <div class="champ-row">
+            <button
+              type="button"
+              class="champ-row"
+              class:selected={buildChampionId === champion.championId}
+              aria-expanded={buildChampionId === champion.championId}
+              onclick={() => openBuild(champion.championId)}
+            >
               <span class="member">
                 <span class="member-icon">
                   {#if champions[champion.championId]}
@@ -645,12 +997,148 @@
               <span class="num" class:dim={champion.points == null}>
                 {champion.points != null ? `${(champion.points / 1000).toFixed(0)}B` : "—"}
               </span>
-            </div>
+            </button>
           {/each}
         {:else}
           <div class="empty">Veri yok.</div>
         {/if}
       </section>
+
+      {#if buildChampionId != null}
+        <section class="panel">
+          <div class="panel-head">
+            <span>
+              Kişisel build · {buildChampion?.name ?? `Şampiyon ${buildChampionId}`}
+            </span>
+            <button class="btn small ghost" type="button" onclick={closeBuild}>Kapat</button>
+          </div>
+
+          {#if buildLoading}
+            <div class="empty">Build yükleniyor…</div>
+          {:else if buildError}
+            <div class="empty">
+              <strong>Build alınamadı</strong>
+              {buildError}
+            </div>
+          {:else if build}
+            <div class="panel-body">
+              {#if build.games > 0}
+                <div class="stat-grid">
+                  <div class="stat">
+                    <strong>{build.games}</strong>
+                    <small>Maç</small>
+                  </div>
+                  <div class="stat">
+                    <strong>{percent(build.winrate)}</strong>
+                    <small>Galibiyet</small>
+                  </div>
+                  <div class="stat">
+                    <strong>{build.kda.toFixed(2)}</strong>
+                    <small>KDA</small>
+                  </div>
+                  <div class="stat">
+                    <strong>{Math.round(build.avgCs)}</strong>
+                    <small>Ort. CS</small>
+                  </div>
+                </div>
+
+                <div class="build-row">
+                  <span class="build-label">Çekirdek</span>
+                  <span class="build-items">
+                    {#each build.coreItems as item (item.itemId)}
+                      <span class="build-item" title={`${items[item.itemId] ?? item.itemId} · ${item.count} maç · ${percent(item.winrate)}`}>
+                        <img
+                          src={itemIcon(item.itemId, ddragonVersion)}
+                          alt={items[item.itemId] ?? `Item ${item.itemId}`}
+                          loading="lazy"
+                          onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                        />
+                        <small>{item.count}×</small>
+                      </span>
+                    {:else}
+                      <span class="dim">Yok</span>
+                    {/each}
+                  </span>
+                </div>
+
+                <div class="build-row">
+                  <span class="build-label">Ayakkabı</span>
+                  <span class="build-items">
+                    {#each build.boots as item (item.itemId)}
+                      <span class="build-item" title={`${items[item.itemId] ?? item.itemId} · ${item.count} maç`}>
+                        <img
+                          src={itemIcon(item.itemId, ddragonVersion)}
+                          alt={items[item.itemId] ?? `Item ${item.itemId}`}
+                          loading="lazy"
+                          onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                        />
+                        <small>{item.count}×</small>
+                      </span>
+                    {:else}
+                      <span class="dim">Yok</span>
+                    {/each}
+                  </span>
+                </div>
+              {:else}
+                <p class="hint">Bu şampiyonla son 50 maçta kayıt yok.</p>
+              {/if}
+
+              <div class="meta-box">
+                <div class="meta-head">
+                  <span>OP.GG</span>
+                  <button class="btn small" type="button" onclick={openOpgg}>
+                    Tarayıcıda aç
+                  </button>
+                </div>
+
+                {#if settings.experimentalMeta}
+                  <div class="meta-controls">
+                    <select bind:value={metaPosition} aria-label="Pozisyon">
+                      <option value="top">Üst</option>
+                      <option value="jungle">Orman</option>
+                      <option value="mid">Orta</option>
+                      <option value="adc">Alt</option>
+                      <option value="support">Destek</option>
+                    </select>
+                    <button class="btn small" type="button" onclick={fetchMeta} disabled={metaLoading}>
+                      {metaLoading ? "Getiriliyor…" : "Meta getir"}
+                    </button>
+                  </div>
+
+                  {#if metaError}
+                    <p class="hint warn-text">{metaError}</p>
+                  {:else if meta}
+                    <div class="meta-stats">
+                      <span>{metaTier(meta.tier)}</span>
+                      <span>Galibiyet {percent(meta.winrate)}</span>
+                      <span>Seçilme {percent(meta.pickrate)}</span>
+                      <span>Ban {percent(meta.banrate)}</span>
+                      {#if meta.cached}<span class="dim">önbellek</span>{/if}
+                    </div>
+                    {#if meta.rune || meta.coreItems.length > 0}
+                      <p class="hint">
+                        {#if meta.rune}Rün: {meta.rune}. {/if}
+                        {#if meta.coreItems.length > 0}
+                          Çekirdek: {meta.coreItems.join(", ")}.
+                        {/if}
+                      </p>
+                    {/if}
+                  {/if}
+
+                  <p class="hint">
+                    Yalnızca şampiyon adı ve pozisyon gönderilir. Riot ID gönderilmez;
+                    yanıtlar 24 saat cihazda saklanır.
+                  </p>
+                {:else}
+                  <p class="hint">
+                    Deneysel meta kapalı. Ayarlar sekmesinden açabilirsin.
+                  </p>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </section>
+      {/if}
 
       <div class="actions">
         <button
@@ -737,6 +1225,20 @@
             </div>
           </section>
         </div>
+
+        <div class="grid-2">
+          <DraftComp
+            title="Takımın kompozisyonu"
+            players={champ.allies}
+            {champions}
+            note={weakNote}
+          />
+          <DraftComp
+            title="Rakip kompozisyonu"
+            players={champ.enemies}
+            {champions}
+          />
+        </div>
       {/if}
     {:else if tab === "matches"}
       <div class="page-head">
@@ -790,9 +1292,38 @@
             <span>Süre</span>
           </div>
           {#each matches as match (match.matchId)}
-            <MatchRow {match} {champions} version={ddragonVersion} />
+            <MatchRow
+              {match}
+              {champions}
+              version={ddragonVersion}
+              selected={selectedMatchId === match.matchId}
+              onselect={() => openMatch(match.matchId)}
+            />
           {/each}
         </div>
+
+        {#if selectedMatchId}
+          {#if matchDetailLoading}
+            <div class="panel">
+              <div class="empty">Maç detayı yükleniyor…</div>
+            </div>
+          {:else if matchDetailError}
+            <div class="panel">
+              <div class="empty">
+                <strong>Maç detayı alınamadı</strong>
+                {matchDetailError}
+              </div>
+            </div>
+          {:else if matchDetail}
+            <MatchDetail
+              detail={matchDetail}
+              {champions}
+              {items}
+              version={ddragonVersion}
+              onclose={() => openMatch(matchDetail!.matchId)}
+            />
+          {/if}
+        {/if}
       {/if}
     {:else}
       <div class="page-head">
@@ -872,11 +1403,31 @@
         </section>
 
         <section class="panel">
+          <div class="panel-head">Deneysel meta</div>
+          <div class="panel-body">
+            <label class="switch">
+              <input type="checkbox" bind:checked={settings.experimentalMeta} />
+              OP.GG meta verisini kullan
+            </label>
+
+            <p class="hint">
+              Varsayılan kapalı. Açıkken yalnızca şampiyon adı ve pozisyon OP.GG MCP
+              sunucusuna gönderilir. Riot ID, PUUID veya hesap bilgisi gönderilmez;
+              yanıtlar 24 saat cihazda tutulur.
+            </p>
+
+            <p class="hint">
+              Kapalıyken OP.GG bağlantısı yalnızca tarayıcıda açılır.
+            </p>
+          </div>
+        </section>
+
+        <section class="panel">
           <div class="panel-head">Yerel veri</div>
           <div class="panel-body">
             <p class="hint">
-              Scout 10 dk, kuyruk adları 1 gün önbellekte tutulur. LP geçmişi cihazda
-              saklanır.
+              Scout 10 dk, hesap özeti 60 sn, ustalık 1 saat, kuyruk adları 1 gün,
+              meta 24 saat önbellekte tutulur. LP geçmişi cihazda saklanır.
             </p>
             <div class="actions">
               <button class="btn ghost" onclick={wipeCache}>Önbelleği temizle</button>

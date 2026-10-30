@@ -1,5 +1,6 @@
 export interface Settings {
   autoUpdate: boolean;
+  experimentalMeta: boolean;
 }
 
 export interface LcuStatus {
@@ -56,6 +57,13 @@ export interface MatchSummary {
 export interface ChampionInfo {
   id: string;
   name: string;
+  tags?: string[];
+  info?: {
+    attack: number;
+    magic: number;
+    defense: number;
+    difficulty: number;
+  };
 }
 
 export interface RankView {
@@ -101,6 +109,97 @@ export interface AccountOverview {
   recentWinrate: number | null;
   recentForm: boolean[];
   streak: number;
+  session: SessionSummary;
+}
+
+export interface SessionSummary {
+  games: number;
+  wins: number;
+  losses: number;
+  winrate: number | null;
+  avgKda: number | null;
+  lpDelta: number | null;
+  streak: number;
+  since: number | null;
+}
+
+export interface MatchPlayer {
+  puuid: string | null;
+  displayName: string;
+  championId: number;
+  teamId: number;
+  position: string | null;
+  kills: number;
+  deaths: number;
+  assists: number;
+  cs: number;
+  gold: number;
+  damage: number;
+  vision: number;
+  items: number[];
+  isMe: boolean;
+}
+
+export interface MatchTeam {
+  teamId: number;
+  win: boolean;
+  kills: number;
+  players: MatchPlayer[];
+}
+
+export interface MatchDetail {
+  matchId: string;
+  queueId: number;
+  queueName: string | null;
+  durationSecs: number;
+  gameCreation: number;
+  teams: MatchTeam[];
+}
+
+export interface BuildItem {
+  itemId: number;
+  count: number;
+  winrate: number;
+}
+
+export interface PersonalBuild {
+  championId: number;
+  games: number;
+  wins: number;
+  winrate: number;
+  kda: number;
+  avgCs: number;
+  position: string | null;
+  coreItems: BuildItem[];
+  boots: BuildItem[];
+}
+
+export interface LivePlayer {
+  displayName: string;
+  championId: number;
+  position: string | null;
+  isAlly: boolean;
+}
+
+export interface LiveGameView {
+  gameId: number;
+  queueId: number;
+  queueName: string | null;
+  allies: LivePlayer[];
+  enemies: LivePlayer[];
+}
+
+export interface MetaReport {
+  champion: string;
+  position: string;
+  tier: number | null;
+  winrate: number | null;
+  pickrate: number | null;
+  banrate: number | null;
+  coreItems: string[];
+  rune: string | null;
+  cached: boolean;
+  fetchedAt: number;
 }
 
 export interface LobbyMember {

@@ -22,26 +22,45 @@ impl Database {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
-             PRAGMA temp_store=MEMORY;
-             CREATE TABLE IF NOT EXISTS kv (
-                 key TEXT PRIMARY KEY,
-                 value TEXT NOT NULL,
-                 updated_at INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS lp_history (
-                 puuid TEXT NOT NULL,
-                 queue TEXT NOT NULL,
-                 ts INTEGER NOT NULL,
-                 tier TEXT NOT NULL,
-                 division TEXT,
-                 lp INTEGER NOT NULL,
-                 wins INTEGER NOT NULL,
-                 losses INTEGER NOT NULL,
-                 PRIMARY KEY (puuid, queue, ts)
-             );
-             CREATE INDEX IF NOT EXISTS idx_lp_history_lookup
-                 ON lp_history (puuid, queue, ts DESC);",
+             PRAGMA temp_store=MEMORY;",
         )?;
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        // v1: temel tablolar. Eski kurulumlarda da güvenle çalışsın diye
+        // CREATE IF NOT EXISTS kullanılır.
+        if version < 1 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS kv (
+                     key TEXT PRIMARY KEY,
+                     value TEXT NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS lp_history (
+                     puuid TEXT NOT NULL,
+                     queue TEXT NOT NULL,
+                     ts INTEGER NOT NULL,
+                     tier TEXT NOT NULL,
+                     division TEXT,
+                     lp INTEGER NOT NULL,
+                     wins INTEGER NOT NULL,
+                     losses INTEGER NOT NULL,
+                     PRIMARY KEY (puuid, queue, ts)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_lp_history_lookup
+                     ON lp_history (puuid, queue, ts DESC);
+                 PRAGMA user_version = 1;",
+            )?;
+        }
+
+        // v2: LP sorgularında kullanılan ikincil indeks.
+        if version < 2 {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_lp_history_lp
+                     ON lp_history (puuid, queue, lp);
+                 PRAGMA user_version = 2;",
+            )?;
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),

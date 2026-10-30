@@ -12,17 +12,24 @@ League of Legends için **draft scout + post-game analiz** masaüstü uygulamas�
 
 ---
 
-## Özellikler (v0.1.1)
+## Özellikler (v0.1.2)
 
 - League Client API (LCU) üzerinden otomatik bağlantı ve oyun fazı takibi
 - **Genel** sekmesinde hesap özeti: Riot ID, seviye, solo/flex derece ve LP
-- LP geçmişi, son 20 maç formu, şampiyon bazlı galibiyet oranı ve KDA
+- **Bugün** paneli: günlük maç sayısı, galibiyet oranı, KDA, LP değişimi, seri
+- LP geçmişi + SVG sparkline, son 20 maç formu, şampiyon bazlı galibiyet oranı
 - **Canlı lobi takibi**: lobideki oyuncular, roller ve dereceleri
+- **Canlı maç paneli**: oyun sırasında takım ve rakip şampiyonları (15 sn)
 - Champ select'te takım listesi, rank/LP, son maç galibiyet oranı
+- **Komp analizi**: fiziksel/büyü hasarı, tank, ön saf ve menzilli dağılımı
 - Rakip isimleri gizliyse **açığa çıkarmaz**
 - Son 20 maç özeti: şampiyon, KDA, CS, süre, queue ve rol
+- **Maç detayı**: iki takımlı skorboard, item ikonları, altın/hasar/görüş
+- **Kişisel build**: son 50 maçtan çekirdek item, ayakkabı, KDA ve CS özeti
+- **OP.GG bağlantısı**: şampiyon build sayfasını tarayıcıda açar
+- İsteğe bağlı **deneysel OP.GG meta** modülü (varsayılan kapalı)
 - Şampiyon adları ve görselleri Data Dragon'dan (Türkçe yerelleştirme)
-- SQLite WAL cache: scout verisi 10 dakika, kalanı oturum içi
+- SQLite WAL cache: scout 10 dk, maç geçmişi 60 sn, ustalık 1 saat
 - Tray'de çalışma, kapatınca arka plana küçülme, tek örnek kilidi
 - GitHub Releases üzerinden imzalı otomatik güncelleme (4 saatte bir sessiz kontrol)
 - Oyun ve champ select sırasında güncelleme kurulumunu engelleyen faz koruması
@@ -74,8 +81,12 @@ Tlas hiçbir API anahtarı istemez. İki kaynak kullanılır:
 
 | Kaynak | Ne için | Nereden |
 |---|---|---|
-| LCU (`https://127.0.0.1:<port>`) | Hesap, faz, champ select, rank/LP, maç geçmişi | League Client'ın `lockfile` dosyası (basic auth) |
-| Data Dragon | Şampiyon adları, ikonları, sürüm | `ddragon.leagueoflegends.com` (herkese açık, CDN) |
+| LCU (`https://127.0.0.1:<port>`) | Hesap, faz, champ select, canlı maç, rank/LP, maç geçmişi ve detayı | League Client'ın `lockfile` dosyası (basic auth) |
+| Data Dragon | Şampiyon adları, ikonları, item adları, sürüm | `ddragon.leagueoflegends.com` (herkese açık, CDN) |
+| OP.GG MCP (isteğe bağlı) | Deneysel şampiyon meta özeti | `mcp-api.op.gg` — varsayılan kapalı, 24 saat cache |
+
+OP.GG modülü açıkken bile yalnızca şampiyon adı ve pozisyon gönderilir; Riot ID,
+PUUID veya hesap bilgisi gönderilmez. Modül kapalıyken dış istek yapılmaz.
 
 LCU bağlantısı `lockfile` üzerinden kurulur. Farklı bir sürücüye kurduysan
 `LEAGUE_LOCKFILE` ortam değişkeniyle yolu belirtebilirsin:
@@ -148,7 +159,7 @@ Repo public olmalı; değilse ayrı bir public `releases` repo'su kullan.
 - `src-tauri/tauri.conf.json`
 
 ```bash
-git tag v0.1.1
+git tag v0.1.2
 git push origin main --tags
 ```
 
@@ -165,19 +176,19 @@ Repo: `Auctus0/tlas` (public). Sıfırdan kurmak gerekirse:
 ```powershell
 git init -b main
 git add .
-git commit -m "feat: Tlas v0.1.1"
+git commit -m "feat: Tlas v0.1.2"
 gh repo create Auctus0/tlas --public --source . --remote origin --push
 ```
 
 Ardından yukarıdaki iki secret'ı ekle, sürümü bump'la ve tag'i push et:
 
 ```powershell
-git tag v0.1.1
+git tag v0.1.2
 git push origin main --tags
 ```
 
 Actions bitince draft release'i kontrol et ve **Publish** et. İlk kurulum dosyası
-`Tlas_0.1.1_x64-setup.exe` olur.
+`Tlas_0.1.2_x64-setup.exe` olur.
 
 ---
 
@@ -204,8 +215,9 @@ LCU resmî olarak desteklenmiyor; Riot süreklilik garantisi vermiyor. Ürünü 
 │   ├── lib/
 │   │   ├── api.ts             # Tauri invoke sarmalayıcıları
 │   │   ├── format.ts          # format yardımcıları
+│   │   ├── composition.ts     # Data Dragon ile komp analizi
 │   │   ├── types.ts
-│   │   └── components/
+│   │   └── components/        # PlayerCard, MatchRow, MatchDetail, DraftComp, Sparkline
 │   └── routes/
 │       ├── +layout.svelte
 │       └── +page.svelte
@@ -216,7 +228,8 @@ LCU resmî olarak desteklenmiyor; Riot süreklilik garantisi vermiyor. Ürünü 
 │       ├── lib.rs             # Tauri setup + tek örnek + tray + window
 │       ├── commands.rs        # IPC yüzeyi + testler
 │       ├── lcu.rs             # lockfile + LCU HTTP (rank, maç geçmişi)
-│       ├── db.rs              # SQLite cache
+│       ├── opgg.rs            # deneysel OP.GG MCP istemcisi
+│       ├── db.rs              # SQLite cache + migration
 │       ├── config.rs          # ayarlar
 │       └── state.rs
 ├── assets/tlas-icon.png       # ikon kaynağı
@@ -233,6 +246,7 @@ LCU resmî olarak desteklenmiyor; Riot süreklilik garantisi vermiyor. Ürünü 
 - [x] M0 — Tauri iskelet, tray, LCU bağlantısı, faz takibi
 - [x] M1 — Champ select kartları, rank/winrate, SQLite cache
 - [x] M2 — Son maçlar listesi (LCU, API anahtarsız)
-- [ ] M2.1 — Maç detayı + timeline metrikleri
+- [x] M2.1 — Maç detayı, kişisel build, komp analizi, canlı maç
+- [ ] M2.2 — Timeline metrikleri (CS/dk, gold diff, objective participation)
 - [ ] M3 — Overlay penceresi, installer cilası
 - [ ] M4 — LCU WebSocket event'leri, testler, Developer Portal kaydı

@@ -9,8 +9,13 @@ import type {
   AccountOverview,
   ChampSelectView,
   LcuStatus,
+  LiveGameView,
   LobbyView,
+  MatchDetail,
+  MatchPlayer,
   MatchSummary,
+  MetaReport,
+  PersonalBuild,
   PlayerCard,
 } from "$lib/types";
 
@@ -78,6 +83,16 @@ export const previewOverview: AccountOverview = {
     true, false, true, true, true, false, true, true, true, false,
   ],
   streak: -2,
+  session: {
+    games: 4,
+    wins: 3,
+    losses: 1,
+    winrate: 75,
+    avgKda: 2.84,
+    lpDelta: 43,
+    streak: 2,
+    since: now / 1000 - 7_200,
+  },
 };
 
 export const previewLobby: LobbyView = {
@@ -209,3 +224,95 @@ export const previewMatches: MatchSummary[] = PREVIEW_MATCHES.map(
     role: null,
   }),
 );
+
+export const previewLiveGame: LiveGameView | null = null;
+
+const PREVIEW_ITEMS = [3153, 3006, 3031, 6672, 3072, 3340].filter(
+  (itemId) => itemId > 0,
+);
+
+const PREVIEW_ALLIES = [
+  { name: "örnek oyuncu#TR1", championId: 141, position: "JUNGLE" },
+  { name: "orda kimse yok#TR1", championId: 103, position: "MIDDLE" },
+  { name: "destek main#TR2", championId: 412, position: "UTILITY" },
+  { name: "üst taraf#TR1", championId: 86, position: "TOP" },
+  { name: "alt koridor#TR3", championId: 222, position: "BOTTOM" },
+];
+
+const PREVIEW_ENEMIES = [
+  { name: "Rakip 1", championId: 64, position: "JUNGLE" },
+  { name: "Rakip 2", championId: 157, position: "MIDDLE" },
+  { name: "Rakip 3", championId: 89, position: "UTILITY" },
+  { name: "Rakip 4", championId: 122, position: "TOP" },
+  { name: "Rakip 5", championId: 202, position: "BOTTOM" },
+];
+
+export function previewMatchDetail(matchId: string): MatchDetail {
+  const match = previewMatches.find((item) => item.matchId === matchId) ?? previewMatches[0];
+  const team = (players: typeof PREVIEW_ALLIES, teamId: number, win: boolean) => ({
+    teamId,
+    win,
+    kills: players.reduce((total, player, index) => total + (index === 0 ? match.kills : 6), 0),
+    players: players.map((player, index): MatchPlayer => {
+      const mine = teamId === 100 && index === 0;
+      return {
+        puuid: mine ? "preview-puuid" : null,
+        displayName: mine ? "örnek oyuncu#TR1" : player.name,
+        championId: mine ? match.championId : player.championId,
+        teamId,
+        position: player.position,
+        kills: mine ? match.kills : 6,
+        deaths: mine ? match.deaths : 4,
+        assists: mine ? match.assists : 8,
+        cs: mine ? match.cs : 152,
+        gold: mine ? 14_200 : 11_600,
+        damage: mine ? 28_400 : 19_800,
+        vision: mine ? 31 : 21,
+        items: PREVIEW_ITEMS,
+        isMe: mine,
+      };
+    }),
+  });
+
+  return {
+    matchId: match.matchId,
+    queueId: match.queueId,
+    queueName: match.queueName,
+    durationSecs: match.durationSecs,
+    gameCreation: match.gameCreation,
+    teams: [team(PREVIEW_ALLIES, 100, match.win), team(PREVIEW_ENEMIES, 200, !match.win)],
+  };
+}
+
+export function previewBuild(championId: number): PersonalBuild {
+  return {
+    championId,
+    games: 12,
+    wins: 8,
+    winrate: 66.67,
+    kda: 2.84,
+    avgCs: 168,
+    position: "JUNGLE",
+    coreItems: [
+      { itemId: 3153, count: 9, winrate: 66.67 },
+      { itemId: 3031, count: 7, winrate: 71.43 },
+      { itemId: 6672, count: 5, winrate: 60 },
+    ],
+    boots: [{ itemId: 3006, count: 10, winrate: 70 }],
+  };
+}
+
+export function previewMeta(champion: string, position: string): MetaReport {
+  return {
+    champion,
+    position,
+    tier: 2,
+    winrate: 50,
+    pickrate: 8,
+    banrate: 6,
+    coreItems: ["Elektrikli Devrikılıcı", "Kara Balta", "Ölümün Dansı"],
+    rune: "Hâkimiyet",
+    cached: false,
+    fetchedAt: Math.floor(now / 1000),
+  };
+}

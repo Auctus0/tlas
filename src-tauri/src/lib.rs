@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod lcu;
 mod models;
+mod opgg;
 mod state;
 mod tray;
 
@@ -27,6 +28,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let state = AppState::new(app.handle())?;
             app.manage(state);
@@ -44,8 +46,12 @@ pub fn run() {
             commands::lcu_status,
             commands::champ_select,
             commands::recent_matches,
+            commands::match_detail,
+            commands::personal_build,
+            commands::live_game,
             commands::account_overview,
             commands::lobby_view,
+            commands::opgg_meta,
             commands::get_settings,
             commands::save_settings,
             commands::clear_cache,

@@ -57,6 +57,14 @@ export function formatDuration(seconds: number): string {
   return `${minutes}:${rest}`;
 }
 
+export function formatCompact(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  if (Math.abs(value) >= 1_000) {
+    return `${(value / 1_000).toFixed(1).replace(".", ",")}B`;
+  }
+  return `${Math.round(value)}`;
+}
+
 export function timeAgo(timestamp: number): string {
   const diff = Date.now() - timestamp;
 
@@ -75,8 +83,51 @@ export function championIcon(championKey: string, version: string): string {
   return `https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${encodeURIComponent(championKey)}.png`;
 }
 
+export function itemIcon(itemId: number, version: string): string {
+  return `https://ddragon.leagueoflegends.com/cdn/${version}/img/item/${itemId}.png`;
+}
+
 export function profileIcon(iconId: number, version: string): string {
   return `https://ddragon.leagueoflegends.com/cdn/${version}/img/profileicon/${iconId}.png`;
+}
+
+/** Data Dragon şampiyon adını OP.GG'nin beklediği ada çevirir. */
+export function championOpggName(name: string): string {
+  return name
+    .toUpperCase()
+    .replace(/['’.]/g, "")
+    .replace(/&/g, "")
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+export function opggLane(position: string | null | undefined): string | null {
+  switch (position) {
+    case "TOP":
+      return "top";
+    case "JUNGLE":
+      return "jungle";
+    case "MIDDLE":
+      return "mid";
+    case "BOTTOM":
+      return "adc";
+    case "UTILITY":
+      return "support";
+    default:
+      return null;
+  }
+}
+
+export function opggChampionUrl(name: string, position?: string | null): string {
+  const slug = championOpggName(name).toLowerCase();
+  const lane = opggLane(position);
+  const suffix = lane ? `/${lane}` : "";
+
+  return `https://www.op.gg/champions/${encodeURIComponent(slug)}/build${suffix}?region=tr`;
+}
+
+export function metaTier(tier: number | null): string {
+  return tier == null ? "—" : `${tier}. tier`;
 }
 
 export function percent(value: number | null | undefined): string {

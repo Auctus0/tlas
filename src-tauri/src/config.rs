@@ -7,11 +7,16 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub auto_update: bool,
+    /// Varsayılan kapalı. Açılırsa şampiyon meta verisi OP.GG MCP'den çekilir.
+    pub experimental_meta: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { auto_update: true }
+        Self {
+            auto_update: true,
+            experimental_meta: false,
+        }
     }
 }
 

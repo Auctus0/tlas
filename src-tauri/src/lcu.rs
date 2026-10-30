@@ -35,7 +35,7 @@ impl Lcu {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .http1_only()
-            .timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(4))
             .build()
             .expect("LCU HTTP client oluşturulamadı");
 
@@ -57,8 +57,21 @@ impl Lcu {
         paths.push(PathBuf::from(
             r"C:\Program Files\Riot Games\League of Legends\lockfile",
         ));
-        paths.push(PathBuf::from(r"D:\Riot Games\League of Legends\lockfile"));
-        paths.push(PathBuf::from(r"E:\Riot Games\League of Legends\lockfile"));
+        paths.push(PathBuf::from(
+            r"C:\Program Files (x86)\Riot Games\League of Legends\lockfile",
+        ));
+
+        // Riot Client bazen farklı sürücüye kurulur; tüm sürücüleri dene.
+        for letter in b'C'..=b'Z' {
+            let path = format!(
+                r"{}:\Riot Games\League of Legends\lockfile",
+                letter as char
+            );
+            let path = PathBuf::from(path);
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
 
         paths
     }
@@ -103,34 +116,53 @@ impl Lcu {
         *self.creds.lock() = None;
     }
 
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, LcuError> {
-        let creds = self.credentials()?;
-        let url = format!("https://127.0.0.1:{}{}", creds.port, path);
+    async fn request(&self, path: &str) -> Result<Value, LcuError> {
+        let mut last_error = None;
 
-        let response = self
-            .client
-            .get(&url)
-            .basic_auth("riot", Some(creds.password.as_str()))
-            .send()
-            .await;
+        // Lockfile yeniden başlatmalarda değişir. Bir kez kimlik bilgilerini
+        // tazeleyip tekrar dene; 404 kalıcı bir cevap olduğu için tekrar denenmez.
+        for attempt in 0..2 {
+            let creds = self.credentials()?;
+            let url = format!("https://127.0.0.1:{}{}", creds.port, path);
 
-        match response {
-            Ok(res) => {
-                let status = res.status();
-                if status.is_success() {
-                    Ok(res.json::<T>().await?)
-                } else if status == reqwest::StatusCode::NOT_FOUND {
-                    Err(LcuError::Status(404))
-                } else {
+            let response = self
+                .client
+                .get(&url)
+                .basic_auth("riot", Some(creds.password.as_str()))
+                .send()
+                .await;
+
+            match response {
+                Ok(res) => {
+                    let status = res.status();
+                    if status.is_success() {
+                        return Ok(res.json::<Value>().await?);
+                    }
+
+                    if status == reqwest::StatusCode::NOT_FOUND {
+                        return Err(LcuError::Status(404));
+                    }
+
                     self.invalidate();
-                    Err(LcuError::Status(status.as_u16()))
+                    last_error = Some(LcuError::Status(status.as_u16()));
+                }
+                Err(error) => {
+                    self.invalidate();
+                    last_error = Some(LcuError::Http(error));
                 }
             }
-            Err(error) => {
-                self.invalidate();
-                Err(LcuError::Http(error))
+
+            if attempt == 0 {
+                tokio::time::sleep(Duration::from_millis(150)).await;
             }
         }
+
+        Err(last_error.unwrap_or(LcuError::NotRunning))
+    }
+
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, LcuError> {
+        let value = self.request(path).await?;
+        Ok(serde_json::from_value(value)?)
     }
 
     pub async fn get_optional<T: DeserializeOwned>(
@@ -146,6 +178,11 @@ impl Lcu {
 
     pub async fn phase(&self) -> Result<String, LcuError> {
         self.get("/lol-gameflow/v1/gameflow-phase").await
+    }
+
+    /// Aktif oyun oturumu. Şampiyon seçimi sonrası takım/şampiyon listesini taşır.
+    pub async fn gameflow_session(&self) -> Result<Option<Value>, LcuError> {
+        self.get_optional("/lol-gameflow/v1/session").await
     }
 
     pub async fn current_summoner(&self) -> Result<Value, LcuError> {

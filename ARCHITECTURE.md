@@ -27,7 +27,7 @@
 
 ---
 
-## 2. Klasör Yapısı (v0.1.1)
+## 2. Klasör Yapısı (v0.1.2)
 
 ```
 LOL/
@@ -40,11 +40,15 @@ LOL/
 │   ├── app.css
 │   ├── lib/
 │   │   ├── api.ts                # invoke() sarmalayıcıları
-│   │   ├── format.ts             # faz/queue/rol/tier formatları
+│   │   ├── format.ts             # faz/queue/rol/tier/OP.GG formatları
+│   │   ├── composition.ts        # Data Dragon tags/info ile komp analizi
 │   │   ├── types.ts              # Rust modellerinin TS karşılığı
 │   │   └── components/
 │   │       ├── PlayerCard.svelte
-│   │       └── MatchRow.svelte
+│   │       ├── MatchRow.svelte
+│   │       ├── MatchDetail.svelte
+│   │       ├── DraftComp.svelte
+│   │       └── Sparkline.svelte
 │   └── routes/
 │       ├── +layout.svelte
 │       └── +page.svelte          # Genel / Champ Select / Maçlar / Ayarlar
@@ -60,6 +64,7 @@ LOL/
 │       ├── commands.rs           # #[tauri::command] IPC + testler
 │       ├── models.rs             # serde structs
 │       ├── lcu.rs                # lockfile keşfi + HTTP client
+│       ├── opgg.rs               # deneysel OP.GG MCP istemcisi + cache
 │       ├── db.rs                 # SQLite WAL cache + LP geçmişi
 │       └── config.rs             # settings.json
 ├── assets/tlas-icon.png
@@ -69,9 +74,9 @@ LOL/
 └── UPDATER.md
 ```
 
-> Planlanan ama henüz uygulanmayan modüller: LCU WebSocket event aboneliği,
-> `live/` (Live Client Data API), `analysis/postgame.rs` timeline metrikleri,
-> migration dosyaları. v0.1.1 bunları polling + LCU maç özetiyle karşılıyor.
+> Henüz uygulanmayan modüller: LCU WebSocket event aboneliği, `live/` Live Client
+> Data API, `analysis/postgame.rs` timeline metrikleri. v0.1.2 bunları LCU
+> polling + maç detayı ile karşılıyor.
 
 ---
 
@@ -124,11 +129,13 @@ LCU /lol-ranked/v1/ranked-stats/{puuid}    → solo + flex (tier, division, LP, 
 LCU /lol-match-history/.../matches (50)    → son 20 form, şampiyon istatistikleri
 LCU /lol-champion-mastery/v1/{puuid}/...   → ustalık puanı
 LCU /lol-lobby/v2/lobby                    → lobi üyeleri + tercih edilen rol
+LCU /lol-gameflow/v1/session               → canlı maç takım/rakip şampiyonları
         │
         ▼
-account_overview / lobby_view (20 sn'de bir, yalnızca Genel sekmesi açıkken)
+account_overview / lobby_view / live_game (20 sn'de bir, yalnızca Genel açıkken)
         │
         ▼
+SQLite kv cache: maç geçmişi 60 sn, ustalık 1 saat
 SQLite lp_history: derece/LP her değiştiğinde yeni satır (son 200 kayıt)
 ```
 
@@ -136,6 +143,9 @@ LP geçmişi LCU'da bulunmadığı için Tlas kendi gözlemlerinden oluşturur:
 tier/division aynı kaldığı sürece fark (`+21`, `-18`) hesaplanır, terfi/düşüş
 sonrası fark gösterilmez. Bu tablo `clear_cache` ile silinmez; kullanıcı verisi
 sayılır.
+
+Hesap özeti 20 saniyede bir yenilenir; 50 maçlık geçmiş ve ustalık ayrı TTL'lere
+sahip cache'ten okunur, böylece her yenilemede LCU'ya aynı ağır istek gitmez.
 
 ### Post-game
 
@@ -151,16 +161,52 @@ LCU /lol-match-history/v1/products/lol/{puuid}/matches
         ▼
 Rol eşlemesi: TOP/MIDDLE/JUNGLE, BOTTOM+CARRY → BOTTOM,
               BOTTOM+SUPPORT → UTILITY
+        │
+        ├─► Skorboard: iki takım, KDA/CS/altın/hasar/görüş/item
+        └─► Kişisel build: son 50 maçta aynı şampiyonun item frekansı
 ```
 
 Post-game tamamen çevrimdışı çalışır: LCU + yerel cache dışında hiçbir servise
-istek gitmez. Gelecek sürümde `analysis/postgame.rs` timeline metrikleri
-(CS/dk, gold diff, ward, objective participation) ekleyecek.
+istek gitmez. `match_detail` tam kadro skorboardunu, `personal_build` ise
+kullanıcının kendi maçlarından çekirdek item/ayakkabı özetini üretir. Item
+adları Data Dragon `item.json` dosyasından gelir; bilinmeyen kimlikler yalnızca
+kimlik olarak gösterilir.
 
 **Silahlanma notu:** LCU'nun maç özeti uç noktası zaman zaman
 `participantIdentities` içinde tek oyuncu döndürür; bu yüzden tam kadro
 bilgisi gereken her şey `/lol-match-history/v1/games/{gameId}` üzerinden
 tamamlanır.
+
+### Canlı maç
+
+```
+LCU /lol-gameflow/v1/session
+        │  phase ∈ {InProgress, GameStart, Reconnect}
+        ▼
+teamOne (takım) → summonerId ile isim çözülür
+teamTwo (rakip) → isim asla çözülmez, "Rakip N"
+        │
+        ▼
+live_game (15 sn poll, yalnızca oyun içi fazda)
+```
+
+### Deneysel OP.GG meta (varsayılan kapalı)
+
+```
+Ayarlar → experimental_meta
+        │
+        ▼
+opgg_meta(champion, position)
+        │  yalnızca şampiyon adı + pozisyon
+        ▼
+https://mcp-api.op.gg/mcp  (initialize → tools/call)
+        │  yanıt: Python-repr metni
+        ▼
+parser → MetaReport → SQLite kv cache (24 saat)
+```
+
+Modül kapalıyken hiçbir dış istek yapılmaz; arayüzde yalnızca OP.GG deep link
+düğmesi kalır. Riot ID, PUUID veya hesap bilgisi hiçbir koşulda gönderilmez.
 
 ---
 
@@ -208,6 +254,7 @@ panic = "abort"
 | Sadece Live Client read | `127.0.0.1:2999`, GET |
 | Otomasyon yok | auto-accept / auto-ban / auto-pick / auto-dodge / chat yok |
 | Gizli bilgi yok | enemy cooldown, enemy jungle timer, fog-of-war bilgisi yok |
+| Dış meta isteği | Yalnızca şampiyon + pozisyon, varsayılan kapalı OP.GG MCP |
 | MMR/ELO yok | rank/LP göster, tahmini MMR gösterme |
 | Yazma minimum | Sadece kullanıcı tıklarsa rune page / item set |
 | Overlay injectsiz | Ayrı always-on-top pencere veya OBS browser source |
@@ -277,6 +324,10 @@ v0.1.1 itibarıyla Riot Web API istemcisi (`riot.rs`), `riotApiKey` ve
 `platform` ayarları kaldırıldı. Sabit veri yalnızca Data Dragon'dan okunur;
 kullanıcıdan hiçbir kimlik bilgisi istenmez. Bu, hem kurulum sürtünmesini
 hem de anahtar sızıntısı riskini ortadan kaldırır.
+
+v0.1.2'de isteğe bağlı deneysel OP.GG MCP modülü eklendi. Varsayılan kapalıdır,
+yalnızca şampiyon adı ve pozisyon gönderir, yanıtları 24 saat yerelde cache'ler.
+Çekirdek özellikler bu modül olmadan da tam çalışır.
 
 ### Champ select event (faz 2)
 

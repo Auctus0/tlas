@@ -6,10 +6,14 @@
     match,
     champions,
     version,
+    selected = false,
+    onselect,
   }: {
     match: MatchSummary;
     champions: Record<number, ChampionInfo>;
     version: string;
+    selected?: boolean;
+    onselect?: () => void;
   } = $props();
 
   const champion = $derived(champions[match.championId] ?? null);
@@ -22,12 +26,19 @@
   );
 </script>
 
-<div class="match">
+<button
+  type="button"
+  class="match"
+  class:selected
+  class:win={match.win}
+  aria-expanded={selected}
+  onclick={onselect}
+>
   <span class="result" class:win={match.win}>
     {match.win ? "Galibiyet" : "Mağlubiyet"}
   </span>
 
-  <div class="champion">
+  <span class="champion">
     {#if !iconFailed && iconKey}
       <img
         src={championIcon(iconKey, version)}
@@ -39,7 +50,7 @@
     <span class="name">
       {champion?.name ?? (match.championName || "Bilinmeyen şampiyon")}
     </span>
-  </div>
+  </span>
 
   <span class="dim">{match.queueName ?? queueName(match.queueId)} · {roleName(match.role)}</span>
 
@@ -54,12 +65,19 @@
     {formatDuration(match.durationSecs)}
     <small>{timeAgo(match.gameCreation)}</small>
   </span>
-</div>
+</button>
 
 <style>
   .match {
+    width: 100%;
     padding: 6px 12px;
+    border: 0;
     border-bottom: 1px solid var(--border);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
   }
 
   .match:last-child {
@@ -68,6 +86,10 @@
 
   .match:hover {
     background: #282828;
+  }
+
+  .match.selected {
+    background: var(--accent-soft);
   }
 
   .result {

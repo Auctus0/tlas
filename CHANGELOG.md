@@ -2,6 +2,53 @@
 
 Tüm önemli değişiklikler bu dosyada tutulur. Sürümleme [SemVer](https://semver.org/) esas alır.
 
+## [0.1.2] — 2026-10-30
+
+Maç detayı, canlı maç, kişisel build ve kompozisyon analizi eklendi. Hesap
+özeti artık daha az LCU isteğiyle çalışıyor.
+
+### Eklendi
+
+- **Maç detayı**: Maçlar sekmesinde bir satıra tıklayınca iki takımlı skorboard
+  açılır. Rol, KDA, CS, altın, hasar, görüş ve item ikonları gösterilir.
+- **Canlı maç paneli**: Oyun sırasında takım ve rakip şampiyonları 15 saniyede
+  bir yenilenir. Rakip kimliği hiçbir zaman çözülmez; yalnızca şampiyon görünür.
+- **Kişisel build**: Şampiyonlar panelinde bir şampiyona tıklayınca son 50 maçtan
+  çekirdek item, ayakkabı, galibiyet oranı, KDA ve ortalama CS özeti çıkar.
+- **Komp analizi**: Şampiyon seçimi sekmesinde iki takım için fiziksel/büyü
+  hasarı, tank, ön saf ve menzilli dağılımı ile eksik uyarıları gösterilir.
+- **Bugün paneli**: Günlük maç sayısı, galibiyet oranı, ortalama KDA, LP değişimi
+  ve seri.
+- **LP sparkline**: LP geçmişinin son 12 kaydı SVG çizgi olarak gösterilir.
+- **OP.GG bağlantısı**: Şampiyon build panelinden OP.GG sayfası tarayıcıda
+  açılabilir (`tauri-plugin-opener`).
+- **Deneysel OP.GG meta**: Ayarlardan açılan isteğe bağlı modül; tier, galibiyet,
+  seçilme, ban oranı, çekirdek item ve rün özeti. Varsayılan kapalı.
+- Maç geçmişi 60 sn, ustalık 1 saat cache'lenir; hesap özeti 20 sn'lik
+  yenilemede 50 maçlık isteği tekrarlamaz.
+
+### Değişti
+
+- LCU istemcisi 4 sn timeout, iki denemeli retry ve kimlik bilgisi yenileme
+  kullanıyor; lockfile tüm sürücülerde aranıyor.
+- SQLite şeması `PRAGMA user_version` tabanlı v1/v2 migration'a geçti.
+
+### Güvenlik sınırları
+
+- OP.GG meta yalnızca şampiyon adı ve pozisyon gönderir; Riot ID, PUUID veya
+  hesap bilgisi gönderilmez. Yanıtlar 24 saat cihazda cache'lenir ve modül
+  varsayılan olarak kapalıdır.
+- Memory okuma, DLL injection, input otomasyonu, auto-accept/ban/pick/dodge yok.
+- Rakip isimleri gizliyse açığa çıkarılmaz; rakip tarafında yalnızca şampiyon
+  gösterilir.
+
+### Bilinen sınırlar
+
+- Canlı maç paneli yalnızca oyun içi fazlarda (`InProgress`, `GameStart`,
+  `Reconnect`) görünür.
+- OP.GG meta deneysel bir MCP uç noktasına dayanır; kesinti durumunda OP.GG
+  bağlantısı çalışmaya devam eder.
+
 ## [0.1.1] — 2026-10-27
 
 Riot Web API bağımlılığı tamamen kaldırıldı. Uygulama artık hiçbir API anahtarı

@@ -8,8 +8,9 @@ use tauri::State;
 use crate::config::Settings;
 use crate::db::LpSnapshot;
 use crate::models::{
-    AccountOverview, ChampionStat, ChampSelectView, LcuStatus, LobbyMember, LobbyView, LpPoint,
-    MatchSummary, PlayerCard, RankView, ScoutCache, SummonerInfo,
+    AccountOverview, BuildItem, ChampionStat, ChampSelectView, LcuStatus, LiveGameView, LivePlayer,
+    LobbyMember, LobbyView, LpPoint, MatchDetail, MatchPlayer, MatchSummary, MatchTeam, MetaReport,
+    PersonalBuild, PlayerCard, RankView, ScoutCache, SessionSummary, SummonerInfo,
 };
 use crate::state::AppState;
 
@@ -17,6 +18,18 @@ use crate::state::AppState;
 const SCOUT_TTL_SECS: i64 = 600;
 /// Kart başına son maç penceresi.
 const SCOUT_MATCH_COUNT: u32 = 20;
+/// Hesap özeti ve maç detayı aynı geçmişi paylaşır; 60 saniye taze kalır.
+const HISTORY_CACHE_SECS: i64 = 60;
+/// Ustalık puanları yavaş değişir; bir saat cache yeterli.
+const MASTERY_CACHE_SECS: i64 = 3_600;
+/// Geçmiş sorgusu her zaman aynı genişlikte yapılır; farklı komutlar paylaşır.
+const HISTORY_COUNT: u32 = 50;
+
+const POSITION_ORDER: [&str; 5] = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"];
+const BOOTS: [i64; 12] = [
+    3006, 3009, 3010, 3020, 3047, 3111, 3117, 3158, 3168, 3172, 3173, 3174,
+];
+const TRINKETS: [i64; 4] = [3340, 3350, 3363, 3364];
 
 #[tauri::command]
 pub async fn lcu_status(state: State<'_, AppState>) -> Result<LcuStatus, String> {
@@ -275,6 +288,67 @@ fn is_summoners_rift(queue_id: i64) -> bool {
     matches!(queue_id, 400 | 420 | 430 | 440 | 480 | 490 | 700)
 }
 
+async fn current_puuid(app: &AppState) -> Result<String, String> {
+    let summoner = app
+        .lcu
+        .current_summoner()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    summoner
+        .get("puuid")
+        .and_then(|value| value.as_str())
+        .map(String::from)
+        .ok_or_else(|| "PUUID bulunamadı. LoL istemcisi açık mı?".to_string())
+}
+
+/// Maç geçmişini kısa süreliğine cache'ler. Hesap özeti 20 saniyede bir
+/// yenilenirken 50 maçlık isteğin her seferinde tekrarlanmasını engeller.
+async fn cached_history(app: &AppState, puuid: &str) -> Option<Value> {
+    let key = format!("history:v2:{}", puuid);
+
+    if let Some(cached) = app.db.kv_get(&key, HISTORY_CACHE_SECS) {
+        if let Ok(value) = serde_json::from_str::<Value>(&cached) {
+            return Some(value);
+        }
+    }
+
+    let value = app.lcu.match_history(puuid, 0, HISTORY_COUNT).await.ok()?;
+    if let Ok(serialized) = serde_json::to_string(&value) {
+        let _ = app.db.kv_set(&key, &serialized);
+    }
+
+    Some(value)
+}
+
+async fn cached_mastery(app: &AppState, puuid: &str) -> HashMap<i64, i64> {
+    let key = format!("mastery:v2:{}", puuid);
+
+    if let Some(cached) = app.db.kv_get(&key, MASTERY_CACHE_SECS) {
+        if let Ok(map) = serde_json::from_str::<HashMap<i64, i64>>(&cached) {
+            return map;
+        }
+    }
+
+    let map = mastery_points(app, puuid).await;
+    if let Ok(serialized) = serde_json::to_string(&map) {
+        let _ = app.db.kv_set(&key, &serialized);
+    }
+
+    map
+}
+
+fn start_of_day() -> i64 {
+    use chrono::{Local, TimeZone};
+
+    let now = Local::now();
+    now.date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|naive| Local.from_local_datetime(&naive).single())
+        .map(|value| value.timestamp())
+        .unwrap_or_else(|| now.timestamp() - 86_400)
+}
+
 fn pick_solo_entry(stats: &Value) -> Option<&Value> {
     queue_entry(
         stats,
@@ -383,11 +457,9 @@ pub async fn recent_matches(
         .to_string();
 
     let limit = count.unwrap_or(20).clamp(1, 50);
-    let history = app
-        .lcu
-        .match_history(&puuid, 0, limit)
-        .await
-        .map_err(|error| error.to_string())?;
+    let history = cached_history(app, &puuid).await.ok_or_else(|| {
+        "Maç geçmişi alınamadı. LoL istemcisi açık olmalı.".to_string()
+    })?;
 
     // Özet listede rol bilgisi yok; oyun detayından tamamla (en fazla 6 eşzamanlı).
     let mut summaries: Vec<MatchSummary> = history_games(&history)
@@ -471,8 +543,6 @@ async fn queue_names(app: &AppState) -> HashMap<i64, String> {
     map
 }
 
-/// Hesap özeti için taranan maç sayısı.
-const OVERVIEW_MATCH_COUNT: u32 = 50;
 /// LP geçmişinde gösterilen kayıt sayısı.
 const LP_HISTORY_LIMIT: u32 = 12;
 
@@ -546,10 +616,22 @@ pub async fn account_overview(state: State<'_, AppState>) -> Result<AccountOverv
     let mut recent_games = 0;
     let mut recent_wins = 0;
     let mut recent_form = Vec::new();
+    let since = start_of_day();
+    let mut session = SessionSummary {
+        games: 0,
+        wins: 0,
+        losses: 0,
+        winrate: None,
+        avg_kda: None,
+        lp_delta: None,
+        streak: 0,
+        since: Some(since),
+    };
 
-    if let Ok(history) = app.lcu.match_history(&puuid, 0, OVERVIEW_MATCH_COUNT).await {
-        let mastery = mastery_points(app, &puuid).await;
+    if let Some(history) = cached_history(app, &puuid).await {
+        let mastery = cached_mastery(app, &puuid).await;
         champions = champion_stats(&history, &puuid, &mastery);
+        session = session_from_history(&history, &puuid, since);
 
         for game in history_games(&history) {
             let queue_id = game
@@ -579,6 +661,7 @@ pub async fn account_overview(state: State<'_, AppState>) -> Result<AccountOverv
         }
     }
 
+    session.lp_delta = session_lp_delta(app, &puuid, lp_queue, since);
     let streak = streak_of(&recent_form);
 
     Ok(AccountOverview {
@@ -591,6 +674,7 @@ pub async fn account_overview(state: State<'_, AppState>) -> Result<AccountOverv
         recent_winrate: rate(recent_wins, recent_games),
         recent_form,
         streak,
+        session,
     })
 }
 
@@ -902,6 +986,94 @@ fn lp_points(app: &AppState, puuid: &str, queue: &str) -> Vec<LpPoint> {
     points
 }
 
+/// Bugünkü maçları özetler. Geçmiş en yeniden eskiye sıralı gelir.
+fn session_from_history(history: &Value, puuid: &str, since: i64) -> SessionSummary {
+    let mut games = 0i64;
+    let mut wins = 0i64;
+    let mut kda_total = 0.0f64;
+    let mut form = Vec::new();
+
+    for game in history_games(history) {
+        let queue_id = game
+            .get("queueId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        if !is_summoners_rift(queue_id) {
+            continue;
+        }
+
+        let created = game
+            .get("gameCreation")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        let created_secs = if created > 100_000_000_000 {
+            created / 1_000
+        } else {
+            created
+        };
+        if created_secs < since {
+            continue;
+        }
+
+        let Some(participant) = lcu_participant(game, puuid) else {
+            continue;
+        };
+        let Some(stats) = participant.get("stats") else {
+            continue;
+        };
+
+        let win = stats
+            .get("win")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let kills = stats.get("kills").and_then(|value| value.as_i64()).unwrap_or(0);
+        let deaths = stats
+            .get("deaths")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        let assists = stats
+            .get("assists")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+
+        games += 1;
+        if win {
+            wins += 1;
+        }
+        kda_total += (kills + assists) as f64 / deaths.max(1) as f64;
+        form.push(win);
+    }
+
+    SessionSummary {
+        games,
+        wins,
+        losses: games - wins,
+        winrate: rate(wins, games),
+        avg_kda: (games > 0).then(|| round2(kda_total / games as f64)),
+        lp_delta: None,
+        streak: streak_of(&form),
+        since: Some(since),
+    }
+}
+
+/// Bugünün LP değişimi. Terfi/düşüş olduysa fark gösterilmez.
+fn session_lp_delta(app: &AppState, puuid: &str, queue: &str, since: i64) -> Option<i64> {
+    let snapshots: Vec<LpSnapshot> = app
+        .db
+        .lp_recent(puuid, queue, 200)
+        .into_iter()
+        .filter(|snapshot| snapshot.ts >= since)
+        .collect();
+
+    let latest = snapshots.first()?;
+    let earliest = snapshots.last()?;
+
+    (snapshots.len() >= 2
+        && latest.tier == earliest.tier
+        && latest.division == earliest.division)
+        .then(|| latest.lp - earliest.lp)
+}
+
 async fn mastery_points(app: &AppState, puuid: &str) -> HashMap<i64, i64> {
     let mut map = HashMap::new();
 
@@ -1136,6 +1308,501 @@ fn role_from_timeline(timeline: Option<&Value>) -> Option<String> {
 }
 
 #[tauri::command]
+pub async fn match_detail(
+    state: State<'_, AppState>,
+    game_id: i64,
+) -> Result<MatchDetail, String> {
+    let app = state.inner();
+    let puuid = current_puuid(app).await?;
+
+    let game = app
+        .lcu
+        .game_detail(game_id)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut detail = parse_match_detail(&game, &puuid);
+    detail.queue_name = queue_names(app).await.get(&detail.queue_id).cloned();
+
+    Ok(detail)
+}
+
+#[tauri::command]
+pub async fn personal_build(
+    state: State<'_, AppState>,
+    champion_id: i64,
+) -> Result<PersonalBuild, String> {
+    let app = state.inner();
+    let puuid = current_puuid(app).await?;
+
+    let history = cached_history(app, &puuid)
+        .await
+        .ok_or_else(|| "Maç geçmişi alınamadı. LoL istemcisi açık olmalı.".to_string())?;
+
+    Ok(build_from_history(champion_id, &history, &puuid))
+}
+
+#[tauri::command]
+pub async fn live_game(state: State<'_, AppState>) -> Result<Option<LiveGameView>, String> {
+    let app = state.inner();
+
+    let Some(session) = app
+        .lcu
+        .gameflow_session()
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    let phase = session
+        .get("phase")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+
+    if !matches!(phase, "InProgress" | "GameStart" | "Reconnect") {
+        return Ok(None);
+    }
+
+    let Some(data) = session.get("gameData") else {
+        return Ok(None);
+    };
+
+    let team_one = data
+        .get("teamOne")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let team_two = data
+        .get("teamTwo")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if team_one.is_empty() && team_two.is_empty() {
+        return Ok(None);
+    }
+
+    let current = app.lcu.current_summoner().await.ok();
+    let self_id = current
+        .as_ref()
+        .and_then(|value| value.get("summonerId"))
+        .and_then(|value| value.as_i64());
+    let self_name = current.as_ref().map(summoner_display_name);
+
+    let allies = join_all(team_one.iter().map(|player| {
+        let app = app;
+        let self_id = self_id;
+        let self_name = self_name.clone();
+
+        async move {
+            let summoner_id = player
+                .get("summonerId")
+                .and_then(|value| value.as_i64())
+                .filter(|value| *value > 0);
+
+            let display_name = if summoner_id.is_some() && summoner_id == self_id {
+                self_name.unwrap_or_else(|| "Sen".to_string())
+            } else if let Some(summoner_id) = summoner_id {
+                match app.lcu.summoner_by_id(summoner_id).await {
+                    Ok(info) => summoner_display_name(&info),
+                    Err(_) => "Takım arkadaşı".to_string(),
+                }
+            } else {
+                "Takım arkadaşı".to_string()
+            };
+
+            LivePlayer {
+                display_name,
+                champion_id: player
+                    .get("championId")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0),
+                position: live_position(player),
+                is_ally: true,
+            }
+        }
+    }))
+    .await;
+
+    let enemies = team_two
+        .iter()
+        .enumerate()
+        .map(|(index, player)| LivePlayer {
+            // Rakip kimliği hiçbir zaman çözülmez; yalnızca şampiyon gösterilir.
+            display_name: format!("Rakip {}", index + 1),
+            champion_id: player
+                .get("championId")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0),
+            position: live_position(player),
+            is_ally: false,
+        })
+        .collect();
+
+    let queue_id = data
+        .pointer("/queue/id")
+        .and_then(|value| value.as_i64())
+        .or_else(|| data.get("queueId").and_then(|value| value.as_i64()))
+        .unwrap_or(0);
+    let queue_name = queue_names(app).await.get(&queue_id).cloned();
+
+    Ok(Some(LiveGameView {
+        game_id: data
+            .get("gameId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0),
+        queue_id,
+        queue_name,
+        allies,
+        enemies,
+    }))
+}
+
+#[tauri::command]
+pub async fn opgg_meta(
+    state: State<'_, AppState>,
+    champion: String,
+    position: String,
+) -> Result<MetaReport, String> {
+    let app = state.inner();
+
+    if !app.config.get().experimental_meta {
+        return Err("Deneysel meta kapalı. Ayarlardan açabilirsin.".to_string());
+    }
+
+    crate::opgg::fetch(&app.db, &champion, &position).await
+}
+
+fn parse_match_detail(game: &Value, puuid: &str) -> MatchDetail {
+    let mut identities: HashMap<i64, &Value> = HashMap::new();
+
+    for identity in game
+        .get("participantIdentities")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(id), Some(player)) = (
+            identity
+                .get("participantId")
+                .and_then(|value| value.as_i64()),
+            identity.get("player"),
+        ) {
+            identities.insert(id, player);
+        }
+    }
+
+    let mut teams: HashMap<i64, MatchTeam> = HashMap::new();
+
+    for participant in game
+        .get("participants")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let team_id = participant
+            .get("teamId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        let stats = participant.get("stats");
+
+        let kills = stats_i64(stats, "kills");
+        let deaths = stats_i64(stats, "deaths");
+        let assists = stats_i64(stats, "assists");
+        let win = stats
+            .and_then(|value| value.get("win"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+
+        let items = (0..=6)
+            .filter_map(|slot| {
+                let item = stats?
+                    .get(format!("item{slot}"))
+                    .and_then(|value| value.as_i64())?;
+                (item > 0).then_some(item)
+            })
+            .collect();
+
+        let identity = participant
+            .get("participantId")
+            .and_then(|value| value.as_i64())
+            .and_then(|id| identities.get(&id))
+            .copied();
+        let player_puuid = identity
+            .and_then(|value| value.get("puuid"))
+            .and_then(|value| value.as_str())
+            .map(String::from);
+        let is_me = player_puuid.as_deref() == Some(puuid);
+
+        let entry = teams.entry(team_id).or_insert(MatchTeam {
+            team_id,
+            win: false,
+            kills: 0,
+            players: Vec::new(),
+        });
+
+        entry.win |= win;
+        entry.kills += kills;
+        entry.players.push(MatchPlayer {
+            puuid: player_puuid,
+            display_name: player_name(identity),
+            champion_id: participant
+                .get("championId")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0),
+            team_id,
+            position: role_from_timeline(participant.get("timeline")),
+            kills,
+            deaths,
+            assists,
+            cs: stats_i64(stats, "totalMinionsKilled") + stats_i64(stats, "neutralMinionsKilled"),
+            gold: stats_i64(stats, "goldEarned"),
+            damage: stats_i64(stats, "totalDamageDealtToChampions"),
+            vision: stats_i64(stats, "visionScore"),
+            items,
+            is_me,
+        });
+    }
+
+    let mut teams: Vec<MatchTeam> = teams.into_values().collect();
+    teams.sort_by_key(|team| team.team_id);
+
+    for team in &mut teams {
+        team.players.sort_by(|left, right| {
+            position_rank(left.position.as_deref())
+                .cmp(&position_rank(right.position.as_deref()))
+                .then_with(|| left.display_name.cmp(&right.display_name))
+        });
+    }
+
+    MatchDetail {
+        match_id: game
+            .get("gameId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            .to_string(),
+        queue_id: game
+            .get("queueId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0),
+        queue_name: None,
+        duration_secs: normalize_duration(game),
+        game_creation: game
+            .get("gameCreation")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0),
+        teams,
+    }
+}
+
+fn build_from_history(champion_id: i64, history: &Value, puuid: &str) -> PersonalBuild {
+    #[derive(Default)]
+    struct ItemAcc {
+        count: i64,
+        wins: i64,
+    }
+
+    let mut items: HashMap<i64, ItemAcc> = HashMap::new();
+    let mut positions: HashMap<String, i64> = HashMap::new();
+    let mut games = 0i64;
+    let mut wins = 0i64;
+    let mut kills_total = 0i64;
+    let mut deaths_total = 0i64;
+    let mut assists_total = 0i64;
+    let mut cs_total = 0i64;
+
+    for game in history_games(history) {
+        let queue_id = game
+            .get("queueId")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        if !is_summoners_rift(queue_id) {
+            continue;
+        }
+
+        let Some(participant) = lcu_participant(game, puuid) else {
+            continue;
+        };
+        if participant
+            .get("championId")
+            .and_then(|value| value.as_i64())
+            != Some(champion_id)
+        {
+            continue;
+        }
+
+        let Some(stats) = participant.get("stats") else {
+            continue;
+        };
+
+        let win = stats
+            .get("win")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+
+        games += 1;
+        if win {
+            wins += 1;
+        }
+        kills_total += stats_i64(Some(stats), "kills");
+        deaths_total += stats_i64(Some(stats), "deaths");
+        assists_total += stats_i64(Some(stats), "assists");
+        cs_total += stats_i64(Some(stats), "totalMinionsKilled")
+            + stats_i64(Some(stats), "neutralMinionsKilled");
+
+        for slot in 0..=5 {
+            let item = stats
+                .get(format!("item{slot}"))
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
+            if item <= 0 {
+                continue;
+            }
+
+            let entry = items.entry(item).or_default();
+            entry.count += 1;
+            if win {
+                entry.wins += 1;
+            }
+        }
+
+        if let Some(position) = role_from_timeline(participant.get("timeline")) {
+            *positions.entry(position).or_default() += 1;
+        }
+    }
+
+    let to_build_item = |(item_id, acc): (&i64, &ItemAcc)| BuildItem {
+        item_id: *item_id,
+        count: acc.count,
+        winrate: round2(acc.wins as f64 / acc.count.max(1) as f64 * 100.0),
+    };
+
+    let mut core_items: Vec<BuildItem> = items
+        .iter()
+        .filter(|(item_id, _)| is_completed_item(**item_id))
+        .map(to_build_item)
+        .collect();
+    core_items.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.item_id.cmp(&right.item_id))
+    });
+    core_items.truncate(5);
+
+    let mut boots: Vec<BuildItem> = items
+        .iter()
+        .filter(|(item_id, _)| BOOTS.contains(*item_id))
+        .map(to_build_item)
+        .collect();
+    boots.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.item_id.cmp(&right.item_id))
+    });
+    boots.truncate(2);
+
+    PersonalBuild {
+        champion_id,
+        games,
+        wins,
+        winrate: rate(wins, games).unwrap_or(0.0),
+        kda: round2(
+            (kills_total + assists_total) as f64 / deaths_total.max(1) as f64,
+        ),
+        avg_cs: if games > 0 {
+            round2(cs_total as f64 / games as f64)
+        } else {
+            0.0
+        },
+        position: positions
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(position, _)| position),
+        core_items,
+        boots,
+    }
+}
+
+fn stats_i64(stats: Option<&Value>, key: &str) -> i64 {
+    stats
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0)
+}
+
+fn normalize_duration(game: &Value) -> i64 {
+    let raw = game
+        .get("gameDuration")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+
+    if raw > 100_000 {
+        raw / 1_000
+    } else {
+        raw
+    }
+}
+
+fn player_name(player: Option<&Value>) -> String {
+    let Some(player) = player else {
+        return "Gizli oyuncu".to_string();
+    };
+
+    if let Some(name) = player
+        .get("summonerName")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+    {
+        return name.to_string();
+    }
+
+    let game_name = player
+        .get("gameName")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let tag_line = player
+        .get("tagLine")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+
+    if game_name.is_empty() {
+        "Gizli oyuncu".to_string()
+    } else if tag_line.is_empty() {
+        game_name.to_string()
+    } else {
+        format!("{}#{}", game_name, tag_line)
+    }
+}
+
+fn summoner_display_name(summoner: &Value) -> String {
+    player_name(Some(summoner))
+}
+
+fn live_position(player: &Value) -> Option<String> {
+    let value = player
+        .get("selectedPosition")
+        .or_else(|| player.get("assignedPosition"))
+        .and_then(|value| value.as_str())?;
+
+    POSITION_ORDER
+        .contains(&value)
+        .then(|| value.to_string())
+}
+
+fn position_rank(position: Option<&str>) -> usize {
+    position
+        .and_then(|value| POSITION_ORDER.iter().position(|item| *item == value))
+        .unwrap_or(POSITION_ORDER.len())
+}
+
+fn is_completed_item(item_id: i64) -> bool {
+    item_id >= 3000 && !BOOTS.contains(&item_id) && !TRINKETS.contains(&item_id)
+}
+
+#[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Settings {
     state.config.get()
 }
@@ -1248,5 +1915,179 @@ mod tests {
         assert_eq!(tier_name("PLATINUM"), "Platin");
         assert_eq!(tier_name("EMERALD"), "Zümrüt");
         assert_eq!(tier_name("UNKNOWN"), "UNKNOWN");
+    }
+
+    fn history_game(
+        game_id: i64,
+        champion_id: i64,
+        win: bool,
+        items: &[i64],
+        creation: i64,
+    ) -> Value {
+        json!({
+            "gameId": game_id,
+            "gameDuration": 1_800,
+            "queueId": 420,
+            "gameCreation": creation,
+            "participantIdentities": [{
+                "participantId": 1,
+                "player": { "puuid": "p1", "summonerName": "Ben" }
+            }],
+            "participants": [{
+                "participantId": 1,
+                "championId": champion_id,
+                "teamId": 100,
+                "timeline": { "lane": "JUNGLE", "role": "NONE" },
+                "stats": {
+                    "win": win,
+                    "kills": 5,
+                    "deaths": 2,
+                    "assists": 7,
+                    "totalMinionsKilled": 100,
+                    "neutralMinionsKilled": 50,
+                    "item0": items.first().copied().unwrap_or(0),
+                    "item1": items.get(1).copied().unwrap_or(0),
+                    "item2": items.get(2).copied().unwrap_or(0),
+                    "item3": items.get(3).copied().unwrap_or(0),
+                    "item4": items.get(4).copied().unwrap_or(0),
+                    "item5": items.get(5).copied().unwrap_or(0),
+                    "item6": items.get(6).copied().unwrap_or(0)
+                }
+            }]
+        })
+    }
+
+    #[test]
+    fn parses_full_match_detail() {
+        let mut participants = Vec::new();
+        let mut identities = Vec::new();
+
+        for index in 0..10 {
+            let id = index + 1;
+            let ally = index < 5;
+
+            participants.push(json!({
+                "participantId": id,
+                "teamId": if ally { 100 } else { 200 },
+                "championId": 141 + index,
+                "timeline": {
+                    "lane": if index == 0 { "JUNGLE" } else { "MIDDLE" },
+                    "role": "NONE"
+                },
+                "stats": {
+                    "win": ally,
+                    "kills": 10 - index,
+                    "deaths": index,
+                    "assists": index,
+                    "totalMinionsKilled": 100,
+                    "neutralMinionsKilled": 20,
+                    "goldEarned": 12_000,
+                    "totalDamageDealtToChampions": 20_000,
+                    "visionScore": 20,
+                    "item0": 3153,
+                    "item1": 3006,
+                    "item2": 0,
+                    "item3": 0,
+                    "item4": 0,
+                    "item5": 0,
+                    "item6": 3340
+                }
+            }));
+
+            identities.push(json!({
+                "participantId": id,
+                "player": {
+                    "puuid": if id == 1 { "p1".to_string() } else { format!("p{id}") },
+                    "summonerName": if id == 1 { "Ben".to_string() } else { format!("Oyuncu {id}") }
+                }
+            }));
+        }
+
+        let game = json!({
+            "gameId": 42,
+            "gameDuration": 1_800,
+            "queueId": 420,
+            "gameCreation": 1_700_000_000_000_i64,
+            "participantIdentities": identities,
+            "participants": participants
+        });
+
+        let detail = parse_match_detail(&game, "p1");
+
+        assert_eq!(detail.match_id, "42");
+        assert_eq!(detail.duration_secs, 1_800);
+        assert_eq!(detail.teams.len(), 2);
+        assert_eq!(detail.teams[0].players.len(), 5);
+        assert!(detail.teams[0].win);
+        assert!(!detail.teams[1].win);
+
+        let me = detail.teams[0]
+            .players
+            .iter()
+            .find(|player| player.is_me)
+            .expect("me");
+
+        assert_eq!(me.position.as_deref(), Some("JUNGLE"));
+        assert_eq!(me.cs, 120);
+        assert_eq!(me.items, vec![3153, 3006, 3340]);
+        assert_eq!(me.display_name, "Ben");
+    }
+
+    #[test]
+    fn builds_personal_item_summary() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let history = json!({
+            "games": {
+                "games": [
+                    history_game(1, 141, true, &[3153, 3006, 3031], now),
+                    history_game(2, 141, true, &[3153, 3031, 3006], now - 3_600_000),
+                    history_game(3, 141, false, &[6672, 3006, 0], now - 7_200_000),
+                    history_game(4, 103, true, &[6655, 3020, 0], now - 10_800_000)
+                ]
+            }
+        });
+
+        let build = build_from_history(141, &history, "p1");
+
+        assert_eq!(build.games, 3);
+        assert_eq!(build.wins, 2);
+        assert_eq!(build.position.as_deref(), Some("JUNGLE"));
+        assert!(build
+            .core_items
+            .iter()
+            .any(|item| item.item_id == 3153 && item.count == 2));
+        assert_eq!(build.boots[0].item_id, 3006);
+        assert!(build
+            .core_items
+            .iter()
+            .all(|item| !BOOTS.contains(&item.item_id)));
+    }
+
+    #[test]
+    fn session_only_counts_today() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let history = json!({
+            "games": {
+                "games": [
+                    history_game(1, 141, true, &[3153], now),
+                    history_game(2, 141, false, &[3153], now - 2 * 86_400_000)
+                ]
+            }
+        });
+
+        let session = session_from_history(&history, "p1", now / 1_000 - 3_600);
+
+        assert_eq!(session.games, 1);
+        assert_eq!(session.wins, 1);
+        assert_eq!(session.losses, 0);
+        assert_eq!(session.streak, 1);
+    }
+
+    #[test]
+    fn classifies_items_for_builds() {
+        assert!(is_completed_item(3153));
+        assert!(!is_completed_item(3006));
+        assert!(!is_completed_item(3340));
+        assert!(!is_completed_item(1055));
     }
 }
