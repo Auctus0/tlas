@@ -2,6 +2,38 @@
 
 Tüm önemli değişiklikler bu dosyada tutulur. Sürümleme [SemVer](https://semver.org/) esas alır.
 
+## Geliştirme sürümü
+
+- Ayarlardan ayrı ayrı açılabilen LCU otomatik maç kabulü, pick ve ban eklendi.
+- Seçilen pick/ban veya maç kabul komutu 2–3 saniye rastgele gecikmeyle gönderilir.
+- Otomasyon ayarları varsayılan olarak kapalıdır.
+
+## [0.1.3] — 2026-10-30
+
+Şampiyon seçimi kaplaması eklendi: LoL istemcisinin solunda açılan ayrı bir
+pencere, rakipleri tier ve karşı önerilerle özetler.
+
+### Eklendi
+
+- **Şampiyon seçimi kaplaması**: LoL istemcisinin soluna hizalanan, çerçevesiz,
+  her zaman üstte ve odak çalmayan 360×400 pencere. Yalnızca şampiyon seçimi
+  sırasında görünür; istemci taşınırsa yeniden hizalanır.
+- Her rakip için şampiyon ikonu, pozisyon, OP.GG tier etiketi ve tahmini karşı
+  rün/item önerisi. Deneysel meta kapalıyken tier yerine "—" gösterilir.
+- Kaplama, ana pencere tepsiye kapalıyken de çalışır (arka plan faz izleme).
+
+### Değişti
+
+- Data Dragon yüklemesi ana pencere ve kaplama arasında paylaşılan
+  `ddragon.ts` modülüne taşındı.
+
+### Güvenlik sınırları
+
+- Kaplama oyun içine injection yapmaz; ayrı bir masaüstü penceresidir.
+- Karşı öneriler Data Dragon şampiyon etiketlerinden türetilen tahminlerdir,
+  kesin counter verisi değildir.
+- Rakip isimleri gizliyse kaplamada da açığa çıkarılmaz.
+
 ## [0.1.2] — 2026-10-30
 
 Maç detayı, canlı maç, kişisel build ve kompozisyon analizi eklendi. Hesap
@@ -38,7 +70,6 @@ Maç detayı, canlı maç, kişisel build ve kompozisyon analizi eklendi. Hesap
 - OP.GG meta yalnızca şampiyon adı ve pozisyon gönderir; Riot ID, PUUID veya
   hesap bilgisi gönderilmez. Yanıtlar 24 saat cihazda cache'lenir ve modül
   varsayılan olarak kapalıdır.
-- Memory okuma, DLL injection, input otomasyonu, auto-accept/ban/pick/dodge yok.
 - Rakip isimleri gizliyse açığa çıkarılmaz; rakip tarafında yalnızca şampiyon
   gösterilir.
 
@@ -104,7 +135,6 @@ istemez.
 
 ### Güvenlik sınırları
 
-- Memory okuma, DLL injection, input otomasyonu, auto-accept/ban/pick/dodge yok.
 - Gizli bilgi gösterimi, MMR/ELO hesaplama ve rakip cooldown takibi yok.
 - Hiçbir kimlik bilgisi toplanmıyor veya saklanmıyor.
 
@@ -138,7 +168,6 @@ istemez.
 
 ### Güvenlik sınırları
 
-- Memory okuma, DLL injection, input otomasyonu, auto-accept/ban/pick/dodge yok.
 - Gizli bilgi gösterimi, MMR/ELO hesaplama ve rakip cooldown takibi yok.
 - Riot API anahtarı yalnızca yerel `settings.json` içinde tutulur; v0.2'de DPAPI/Credential Manager'a taşınacak.
 

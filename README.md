@@ -1,11 +1,14 @@
 # Tlas
 
-League of Legends için **draft scout + maç sonrası analiz** masaüstü uygulaması.
+LoL için taslak (draft) ve maç sonrası analiz masaüstü uygulaması.
+
+Tlas, LoL istemcisine salt okunur bağlanır; hesap özetini, şampiyon seçimini ve
+maç geçmişini tek ekranda toplar. İsteğe bağlı olarak şampiyon seçimi sırasında
+istemcinin yanında küçük bir rakip kaplaması açar.
 
 - **Stack:** Tauri 2 · Rust · Svelte 5 (SvelteKit) · TypeScript · SQLite
 - **Platform:** Windows 10/11
-- **Veri:** Riot API anahtarı gerekmez — LCU + Data Dragon
-- **Ban-safe:** Memory okuma, DLL injection, input otomasyonu ve gizli bilgi gösterimi yok
+- **Veri:** Riot API anahtarı gerekmez — LoL istemcisi (LCU) + Data Dragon
 
 > Tlas isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
 
@@ -13,20 +16,21 @@ League of Legends için **draft scout + maç sonrası analiz** masaüstü uygula
 
 ## Özellikler
 
-- League Client API (LCU) üzerinden otomatik bağlantı ve oyun fazı takibi
-- **Genel**: hesap özeti, solo/flex derece, LP geçmişi ve SVG sparkline
-- **Bugün**: günlük maç sayısı, galibiyet oranı, KDA, LP değişimi ve seri
+- LoL istemcisine otomatik bağlantı ve oyun fazı takibi
+- **Genel:** hesap özeti, solo/flex derece, LP geçmişi ve sparkline
+- **Bugün:** günlük maç sayısı, galibiyet oranı, KDA, LP değişimi ve seri
 - Son 20 maç formu, şampiyon bazlı galibiyet oranı ve ustalık puanı
-- **Canlı lobi**: lobideki oyuncular, roller ve dereceleri
-- **Canlı maç**: oyun sırasında takım ve rakip şampiyonları
-- **Şampiyon seçimi**: takım/rakip listesi, rank/LP ve son maç galibiyet oranı
-- **Komp analizi**: fiziksel/büyü hasarı, tank, ön saf ve menzilli dağılımı
-- **Maç detayı**: iki takımlı skorboard, item ikonları, altın/hasar/görüş
-- **Kişisel build**: son 50 maçtan çekirdek item, ayakkabı, KDA ve ortalama CS
-- **OP.GG bağlantısı**: şampiyon build sayfasını tarayıcıda açar
+- **Canlı lobi:** lobideki oyuncular, roller ve dereceleri
+- **Canlı maç:** oyun sırasında takım ve rakip şampiyonları
+- **Şampiyon seçimi:** takım/rakip listesi, rank/LP ve son maç galibiyet oranı
+- **Rakip kaplaması:** şampiyon seçimi sırasında istemcinin solunda açılan,
+  her rakip için tier ve tahmini karşı rün/item gösteren ayrı pencere
+- **Komp analizi:** fiziksel/büyü hasarı, tank, ön saf ve menzilli dağılımı
+- **Maç detayı:** iki takımlı skorboard, item ikonları, altın/hasar/görüş
+- **Kişisel build:** son 50 maçtan çekirdek item, ayakkabı, KDA ve ortalama CS
+- **OP.GG bağlantısı:** şampiyon build sayfasını tarayıcıda açar
 - İsteğe bağlı **deneysel OP.GG meta** modülü (varsayılan kapalı)
-- Tray'de çalışma, tek örnek kilidi ve imzalı otomatik güncelleme
-- Oyun ve şampiyon seçimi sırasında güncelleme kurulumunu engelleyen faz koruması
+- Sistem tepsisinde çalışma ve tek örnek kilidi
 
 Rakip isimleri gizliyse Tlas bunları açığa çıkarmaz.
 
@@ -37,8 +41,18 @@ Rakip isimleri gizliyse Tlas bunları açığa çıkarmaz.
 [Releases](https://github.com/Auctus0/tlas/releases/latest) sayfasından
 `Tlas_x64-setup.exe` dosyasını indirip çalıştır. Kurulum yönetici yetkisi istemez.
 
-Güncellemeler uygulama içinden imzalı olarak indirilir; tarayıcıya veya manuel
-dosya indirmeye gerek yoktur.
+Tlas'ı açtıktan sonra LoL istemcisini başlatman yeterli. Uygulama tepside
+çalışmaya devam eder; pencereyi kapatmak uygulamayı kapatmaz.
+
+---
+
+## Kullanım
+
+- **Genel:** hesap, derece ve son maç özeti.
+- **Şampiyon Seçimi:** takım ve rakip kartları, komp analizi ve kişisel build.
+  Rakip kaplaması bu sekme açık olmasa da şampiyon seçimi başladığında görünür.
+- **Maçlar:** maç listesine tıklayınca skorboard açılır.
+- **Ayarlar:** deneysel meta, güncelleme kontrolü ve isteğe bağlı LCU otomasyonu.
 
 ---
 
@@ -46,7 +60,7 @@ dosya indirmeye gerek yoktur.
 
 | Kaynak | Ne için | Nereden |
 |---|---|---|
-| LCU (`https://127.0.0.1:<port>`) | Hesap, faz, şampiyon seçimi, canlı maç, rank/LP, maç geçmişi ve detayı | League Client `lockfile` (basic auth) |
+| LCU (`https://127.0.0.1:<port>`) | Hesap, faz, şampiyon seçimi, canlı maç, rank/LP, maç geçmişi ve detayı | LoL istemcisi `lockfile` (basic auth) |
 | Data Dragon | Şampiyon/item adları, ikonlar, sürüm | `ddragon.leagueoflegends.com` (herkese açık CDN) |
 | OP.GG MCP (isteğe bağlı) | Deneysel şampiyon meta özeti | Varsayılan kapalı, 24 saat cache |
 
@@ -62,21 +76,24 @@ PUUID veya hesap bilgisi gönderilmez.
 
 ---
 
-## Gizlilik ve ban-safe sınırlar
+## Sınırlar
 
-| Yapılan | Yapılmayan |
+| Tlas ne yapar | Tlas ne yapmaz |
 |---|---|
-| LCU HTTPS okuma (`lockfile` + basic auth) | `ReadProcessMemory` / `WriteProcessMemory` |
+| LCU HTTPS okuma (`lockfile` + basic auth) | Bellek okuma veya yazma |
 | Live Client Data API okuma | DLL injection / hooking |
-| Data Dragon (şampiyon/item verisi) | `SendInput` / input otomasyonu |
-| Harici tray + pencere | Oyun içine injection overlay |
-| Görünen bilgiyi gösterme | Enemy cooldown / gizli bilgi / MMR-ELO |
-| Kullanıcı tıklarsa OP.GG deep link | Otomatik kabul / ban / pick / dodge |
+| Data Dragon'dan şampiyon/item verisi | `SendInput` ile tuş/fare otomasyonu |
+| Ayrı, always-on-top kaplama penceresi | Oyun içine injection overlay |
+| Yalnızca görünen bilgiyi gösterme | Enemy cooldown / gizli bilgi / MMR-ELO |
+| Ayarlardan açılan isteğe bağlı LCU komutları | Varsayılan olarak açık otomasyon |
+
+LCU resmî olarak desteklenmiyor; Riot süreklilik garantisi vermiyor. İsteğe bağlı
+LCU otomasyonu (maç kabulü, pick, ban) varsayılan olarak kapalıdır, 2–3 saniye
+rastgele gecikmeyle çalışır ve istemci sürümleriyle değişebilecek yazma uç
+noktalarına dayanır.
 
 Hiçbir kimlik bilgisi toplanmaz veya saklanmaz. LP geçmişi yalnızca cihazda
 tutulur ve `clear_cache` ile silinmez; kullanıcı verisi sayılır.
-
-LCU resmî olarak desteklenmiyor; Riot süreklilik garantisi vermiyor.
 
 ---
 
@@ -99,9 +116,11 @@ Faydalı komutlar:
 ```bash
 npm run check          # Svelte + TypeScript kontrolü
 npm run build          # Frontend build
-cargo check            # src-tauri içinde
+cargo check            # Rust kontrolü
 cargo test             # Rust birim testleri
 ```
+
+Rust komutları `src-tauri` dizininde çalıştırılır.
 
 ---
 
@@ -114,16 +133,20 @@ cargo test             # Rust birim testleri
 │   │   ├── api.ts             # Tauri invoke sarmalayıcıları
 │   │   ├── format.ts          # format yardımcıları
 │   │   ├── composition.ts     # Data Dragon ile komp analizi
+│   │   ├── counter.ts         # tahmini karşı rün/item
+│   │   ├── ddragon.ts         # paylaşılan Data Dragon yükleyici
 │   │   ├── types.ts
 │   │   └── components/        # PlayerCard, MatchRow, MatchDetail, DraftComp, Sparkline
 │   └── routes/
 │       ├── +layout.svelte
-│       └── +page.svelte
+│       ├── +page.svelte       # ana pencere
+│       └── overlay/+page.svelte
 ├── src-tauri/
 │   ├── capabilities/          # Tauri izinleri
 │   ├── icons/                 # Tlas uygulama ikonları
 │   └── src/
-│       ├── lib.rs             # Tauri setup + tek örnek + tray + window
+│       ├── lib.rs             # Tauri setup + tek örnek + tray
+│       ├── overlay.rs         # kaplama hizalama ve faz izleme
 │       ├── commands.rs        # IPC yüzeyi + testler
 │       ├── lcu.rs             # lockfile + LCU HTTP
 │       ├── opgg.rs            # deneysel OP.GG MCP istemcisi
@@ -134,11 +157,3 @@ cargo test             # Rust birim testleri
 ├── CHANGELOG.md
 └── ARCHITECTURE.md
 ```
-
----
-
-## Planlanan
-
-- Timeline metrikleri (CS/dk, gold diff, objective participation)
-- LCU WebSocket event'leri
-- Overlay penceresi ve gelişmiş taslak önerileri

@@ -27,7 +27,7 @@
 
 ---
 
-## 2. Klasör Yapısı (v0.1.2)
+## 2. Klasör Yapısı (v0.1.3)
 
 ```
 LOL/
@@ -42,6 +42,8 @@ LOL/
 │   │   ├── api.ts                # invoke() sarmalayıcıları
 │   │   ├── format.ts             # faz/queue/rol/tier/OP.GG formatları
 │   │   ├── composition.ts        # Data Dragon tags/info ile komp analizi
+│   │   ├── counter.ts            # rakip tags/info ile tahmini karşı öneri
+│   │   ├── ddragon.ts            # paylaşılan Data Dragon yükleyici + cache
 │   │   ├── types.ts              # Rust modellerinin TS karşılığı
 │   │   └── components/
 │   │       ├── PlayerCard.svelte
@@ -51,7 +53,8 @@ LOL/
 │   │       └── Sparkline.svelte
 │   └── routes/
 │       ├── +layout.svelte
-│       └── +page.svelte          # Genel / Champ Select / Maçlar / Ayarlar
+│       ├── +page.svelte          # Genel / Champ Select / Maçlar / Ayarlar
+│       └── overlay/+page.svelte  # şampiyon seçimi kaplaması
 ├── src-tauri/
 │   ├── Cargo.toml
 │   ├── build.rs
@@ -61,6 +64,7 @@ LOL/
 │   └── src/
 │       ├── lib.rs                # setup, tek örnek, tray, pencere
 │       ├── main.rs
+│       ├── overlay.rs            # Win32 hizalama + görünürlük + faz izleme
 │       ├── commands.rs           # #[tauri::command] IPC + testler
 │       ├── models.rs             # serde structs
 │       ├── lcu.rs                # lockfile keşfi + HTTP client
@@ -69,9 +73,7 @@ LOL/
 │       └── config.rs             # settings.json
 ├── assets/tlas-icon.png
 ├── CHANGELOG.md
-├── ARCHITECTURE.md
-├── RESEARCH.md
-└── UPDATER.md
+└── ARCHITECTURE.md
 ```
 
 > Henüz uygulanmayan modüller: LCU WebSocket event aboneliği, `live/` Live Client
@@ -120,6 +122,34 @@ Riot Web API anahtarı hiçbir aşamada kullanılmaz.
 **Prefetch:** v0.1.1'de champ select açıldığında istekler başlar. Planlanan: lobby
 oluştuğunda (`/lol-lobby/v2/lobby`) takım arkadaşlarını çözüp champ select'te sadece
 eksikleri çekmek.
+
+### Şampiyon seçimi kaplaması
+
+```
+Rust arka plan görevi (2 sn)
+        │  GET /lol-gameflow/v1/gameflow-phase
+        ▼
+phase == "ChampSelect" ?
+        │ evet                          │ hayır
+        ▼                               ▼
+FindWindowW("RiotWindowClass")       pencereyi gizle
+GetWindowRect → sol kenar
+        │
+        ▼
+ayrı "overlay" webview penceresi
+(360×400, çerçevesiz, always-on-top, focusable=false)
+        │
+        ▼
+Champ Select poll (4 sn) → rakip listesi
+        │
+        ├─► OP.GG meta (yalnızca deneysel mod açıksa) → tier
+        └─► Data Dragon tags/info → tahmini rün + item
+```
+
+Kaplama ana pencereye injection yapmaz. Ayrı bir Tauri penceresidir; `overlay`
+etiketli route yüklenir. Ana pencere tepsiye kapalıyken de faz izleme Rust
+tarafında sürdüğü için kaplama açılmaya devam eder. Deneysel meta kapalıyken
+OP.GG'ye hiç istek gitmez; tier yerine "—" gösterilir.
 
 ### Genel sekmesi (hesap + lobi)
 
@@ -245,19 +275,18 @@ panic = "abort"
 
 ## 5. Ban-Safe Tasarım Kuralları (kod seviyesinde)
 
-| Kural | Uygulama |
-|---|---|
-| Memory yok | `ReadProcessMemory`, `OpenProcess`, `WriteProcessMemory` yasak |
-| Injection yok | DLL inject, `SetWindowsHookEx`, `CreateRemoteThread` yok |
-| Input yok | `SendInput`, `keybd_event`, `mouse_event` yok |
-| Sadece LCU HTTPS | `lockfile` → `riot:<password>` basic auth, self-signed cert ignore |
-| Sadece Live Client read | `127.0.0.1:2999`, GET |
-| Otomasyon yok | auto-accept / auto-ban / auto-pick / auto-dodge / chat yok |
-| Gizli bilgi yok | enemy cooldown, enemy jungle timer, fog-of-war bilgisi yok |
-| Dış meta isteği | Yalnızca şampiyon + pozisyon, varsayılan kapalı OP.GG MCP |
-| MMR/ELO yok | rank/LP göster, tahmini MMR gösterme |
-| Yazma minimum | Sadece kullanıcı tıklarsa rune page / item set |
-| Overlay injectsiz | Ayrı always-on-top pencere veya OBS browser source |
+| Kural                   | Uygulama                                                           |
+| ----------------------- | ------------------------------------------------------------------ |
+| Memory yok              | `ReadProcessMemory`, `OpenProcess`, `WriteProcessMemory` yasak     |
+| Injection yok           | DLL inject, `SetWindowsHookEx`, `CreateRemoteThread` yok           |
+| Input yok               | `SendInput`, `keybd_event`, `mouse_event` yok                      |
+| Sadece LCU HTTPS        | `lockfile` → `riot:<password>` basic auth, self-signed cert ignore |
+| Sadece Live Client read | `127.0.0.1:2999`, GET                                              |
+| Gizli bilgi yok         | enemy cooldown, enemy jungle timer, fog-of-war bilgisi yok         |
+| Dış meta isteği         | Yalnızca şampiyon + pozisyon, varsayılan kapalı OP.GG MCP          |
+| MMR/ELO yok             | rank/LP göster, tahmini MMR gösterme                               |
+| Yazma minimum           | Sadece kullanıcı tıklarsa rune page / item set                     |
+| Overlay injectsiz       | Ayrı always-on-top pencere veya OBS browser source                 |
 
 **Kore:** LCU tabanlı özellikleri KR platformunda kapat (`platformId == "KR"`).
 
