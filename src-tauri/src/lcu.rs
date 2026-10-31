@@ -63,10 +63,7 @@ impl Lcu {
 
         // Riot Client bazen farklı sürücüye kurulur; tüm sürücüleri dene.
         for letter in b'C'..=b'Z' {
-            let path = format!(
-                r"{}:\Riot Games\League of Legends\lockfile",
-                letter as char
-            );
+            let path = format!(r"{}:\Riot Games\League of Legends\lockfile", letter as char);
             let path = PathBuf::from(path);
             if !paths.contains(&path) {
                 paths.push(path);
@@ -160,6 +157,55 @@ impl Lcu {
         Err(last_error.unwrap_or(LcuError::NotRunning))
     }
 
+    async fn write(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<(), LcuError> {
+        let creds = self.credentials()?;
+        let url = format!("https://127.0.0.1:{}{}", creds.port, path);
+        let mut request = self
+            .client
+            .request(method, &url)
+            .basic_auth("riot", Some(creds.password.as_str()));
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request.send().await?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(LcuError::Status(response.status().as_u16()))
+        }
+    }
+
+    async fn post(&self, path: &str, body: Option<Value>) -> Result<(), LcuError> {
+        self.write(reqwest::Method::POST, path, body).await
+    }
+
+    async fn patch(&self, path: &str, body: Option<Value>) -> Result<(), LcuError> {
+        self.write(reqwest::Method::PATCH, path, body).await
+    }
+
+    pub async fn accept_ready_check(&self) -> Result<(), LcuError> {
+        self.post("/lol-matchmaking/v1/ready-check/accept", None)
+            .await
+    }
+
+    pub async fn complete_champ_action(
+        &self,
+        action_id: i64,
+        champion_id: i64,
+    ) -> Result<(), LcuError> {
+        // LCU sözleşmesi: aksiyon güncellemesi PATCH ile yapılır.
+        self.patch(
+            &format!("/lol-champ-select/v1/session/actions/{}", action_id),
+            Some(serde_json::json!({"championId": champion_id, "completed": true})),
+        )
+        .await
+    }
+
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, LcuError> {
         let value = self.request(path).await?;
         Ok(serde_json::from_value(value)?)
@@ -246,7 +292,13 @@ impl Lcu {
     pub async fn status(&self) -> LcuStatus {
         match self.phase().await {
             Ok(phase) => {
-                let summoner = self.current_summoner().await.ok();
+                // İsim ve bölge bilgisi birbirinden bağımsızdır; seri bekleme
+                // durum yenilemesini gereksiz yere iki istek süresi uzatır.
+                let (summoner, region) = tokio::join!(
+                    self.current_summoner(),
+                    self.get::<Value>("/riotclient/region-locale"),
+                );
+                let summoner = summoner.ok();
 
                 let summoner_name = summoner.as_ref().and_then(|value| {
                     let game_name = value.get("gameName").and_then(|v| v.as_str());
@@ -262,16 +314,12 @@ impl Lcu {
                         })
                 });
 
-                let platform = self
-                    .get::<Value>("/riotclient/region-locale")
-                    .await
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("region")
-                            .and_then(|v| v.as_str())
-                            .map(String::from)
-                    });
+                let platform = region.ok().and_then(|value| {
+                    value
+                        .get("region")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                });
 
                 LcuStatus {
                     connected: true,

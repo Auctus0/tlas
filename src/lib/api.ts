@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AccountOverview,
   ChampSelectView,
+  DraftInsight,
   LcuStatus,
   LiveGameView,
   LobbyView,
@@ -33,6 +34,11 @@ export const getChampSelect = async (): Promise<ChampSelectView | null> =>
   preview
     ? (await loadPreview()).previewChampSelect
     : invoke<ChampSelectView | null>("champ_select");
+
+export const getDraftInsights = async (): Promise<DraftInsight[]> =>
+  preview
+    ? (await loadPreview()).previewDraftInsights
+    : invoke<DraftInsight[]>("draft_insights");
 
 export const getRecentMatches = async (count = 20): Promise<MatchSummary[]> =>
   preview
@@ -81,7 +87,7 @@ export const getLobby = async (): Promise<LobbyView | null> =>
 
 export const getSettings = async (): Promise<Settings> =>
   preview
-    ? { autoUpdate: true, experimentalMeta: false }
+    ? { autoUpdate: true, experimentalMeta: false, autoAccept: false, autoPickChampionId: null, autoBanChampionId: null }
     : invoke<Settings>("get_settings");
 
 export const saveSettings = async (settings: Settings): Promise<void> => {
@@ -92,4 +98,16 @@ export const saveSettings = async (settings: Settings): Promise<void> => {
 export const clearCache = async (): Promise<void> => {
   if (preview) return;
   await invoke<void>("clear_cache");
+};
+
+/** Şampiyon seçimi kaplamasını göster/gizle. Konum backend'de hesaplanır. */
+export const setOverlayVisible = async (visible: boolean): Promise<void> => {
+  if (preview) return;
+  await invoke<void>("set_overlay_visible", { visible });
+};
+
+/** Kaplamayı LoL istemcisinin yanına yeniden hizala. */
+export const placeOverlay = async (): Promise<void> => {
+  if (preview) return;
+  await invoke<void>("place_overlay");
 };

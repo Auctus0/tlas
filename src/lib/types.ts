@@ -1,6 +1,9 @@
 export interface Settings {
   autoUpdate: boolean;
   experimentalMeta: boolean;
+  autoAccept: boolean;
+  autoPickChampionId: number | null;
+  autoBanChampionId: number | null;
 }
 
 export interface LcuStatus {
@@ -35,7 +38,17 @@ export interface ChampSelectView {
   allies: PlayerCard[];
   enemies: PlayerCard[];
   myChampionId: number | null;
+  myPosition: string | null;
   timer: number | null;
+}
+
+export interface DraftInsight {
+  championId: number;
+  position: string | null;
+  games: number;
+  wins: number;
+  winrate: number;
+  kda: number;
 }
 
 export interface MatchSummary {
@@ -179,6 +192,7 @@ export interface LivePlayer {
   championId: number;
   position: string | null;
   isAlly: boolean;
+  isMe: boolean;
 }
 
 export interface LiveGameView {

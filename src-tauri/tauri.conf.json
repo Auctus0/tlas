@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Tlas",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "identifier": "com.tlas.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -37,7 +37,7 @@
     "copyright": "Copyright © 2026 Tlas",
     "category": "Utility",
     "shortDescription": "League of Legends draft scout and post-game companion",
-    "longDescription": "Tlas shows champ select scouting and post-game match summaries using only official Riot and League Client APIs. No memory reading, injection, or input automation.",
+    "longDescription": "Tlas shows champ select scouting and post-game match summaries using Riot and League Client APIs, with optional LCU draft and ready-check actions. No memory reading, injection, or simulated keyboard/mouse input.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -8,6 +8,7 @@
 import type {
   AccountOverview,
   ChampSelectView,
+  DraftInsight,
   LcuStatus,
   LiveGameView,
   LobbyView,
@@ -23,7 +24,7 @@ const now = Date.now();
 
 export const previewStatus: LcuStatus = {
   connected: true,
-  phase: "Lobby",
+  phase: "InProgress",
   summonerName: "örnek oyuncu#TR1",
   platform: "TR",
   error: null,
@@ -191,8 +192,16 @@ export const previewChampSelect: ChampSelectView = {
     card("Gizli oyuncu", 202, "Jhin", "BOTTOM", "", "", 0, 0, 0, false),
   ],
   myChampionId: 141,
+  myPosition: "JUNGLE",
   timer: 18,
 };
+
+export const previewDraftInsights: DraftInsight[] = [
+  { championId: 141, position: "JUNGLE", games: 12, wins: 8, winrate: 66.67, kda: 2.84 },
+  { championId: 64, position: "JUNGLE", games: 7, wins: 4, winrate: 57.14, kda: 3.1 },
+  { championId: 103, position: "MIDDLE", games: 6, wins: 3, winrate: 50, kda: 2.42 },
+  { championId: 412, position: "UTILITY", games: 5, wins: 3, winrate: 60, kda: 3.8 },
+];
 
 const PREVIEW_MATCHES: Array<[string, number, string, boolean, number, number, number, number, number, number]> = [
   ["TR1_1", 141, "Kayn", true, 12, 4, 9, 182, 1_942, 420],
@@ -225,7 +234,19 @@ export const previewMatches: MatchSummary[] = PREVIEW_MATCHES.map(
   }),
 );
 
-export const previewLiveGame: LiveGameView | null = null;
+export const previewLiveGame: LiveGameView | null = {
+  gameId: 91827364,
+  queueId: 420,
+  queueName: "Dereceli Tek/Çift",
+  allies: [
+    { displayName: "örnek oyuncu#TR1", championId: 141, position: "JUNGLE", isAlly: true, isMe: true },
+    { displayName: "orda kimse yok#TR1", championId: 103, position: "MIDDLE", isAlly: true, isMe: false },
+  ],
+  enemies: [
+    { displayName: "Rakip 1", championId: 64, position: "JUNGLE", isAlly: false, isMe: false },
+    { displayName: "Rakip 2", championId: 157, position: "MIDDLE", isAlly: false, isMe: false },
+  ],
+};
 
 const PREVIEW_ITEMS = [3153, 3006, 3031, 6672, 3072, 3340].filter(
   (itemId) => itemId > 0,

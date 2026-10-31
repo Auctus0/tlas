@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::db::Database;
 use crate::models::MetaReport;
@@ -98,7 +98,10 @@ async fn initialize(client: &reqwest::Client) -> Result<Session, String> {
         .map_err(|error| format!("OP.GG yanıtı okunamadı: {error}"))?;
 
     if !status.is_success() {
-        return Err(format!("OP.GG oturumu açılamadı (HTTP {}).", status.as_u16()));
+        return Err(format!(
+            "OP.GG oturumu açılamadı (HTTP {}).",
+            status.as_u16()
+        ));
     }
 
     let value = parse_body(&text)?;
@@ -159,7 +162,10 @@ async fn call_champion_analysis(
         .map_err(|error| format!("OP.GG yanıtı okunamadı: {error}"))?;
 
     if !status.is_success() {
-        return Err(format!("OP.GG isteği başarısız (HTTP {}).", status.as_u16()));
+        return Err(format!(
+            "OP.GG isteği başarısız (HTTP {}).",
+            status.as_u16()
+        ));
     }
 
     let value = parse_body(&text)?;
@@ -179,7 +185,8 @@ fn parse_body(text: &str) -> Result<Value, String> {
     let trimmed = text.trim();
 
     if trimmed.starts_with('{') {
-        return serde_json::from_str(trimmed).map_err(|error| format!("OP.GG yanıtı çözülemedi: {error}"));
+        return serde_json::from_str(trimmed)
+            .map_err(|error| format!("OP.GG yanıtı çözülemedi: {error}"));
     }
 
     for line in trimmed.lines() {

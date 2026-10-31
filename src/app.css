@@ -532,6 +532,39 @@ input::placeholder {
   color: var(--muted);
 }
 
+.draft-insight-head,
+.draft-insight-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px 50px 104px 54px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.draft-insight-head {
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-2);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.draft-insight-row {
+  min-height: 38px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.draft-insight-row:last-child {
+  border-bottom: 0;
+}
+
+.draft-insight-head span:not(:first-child),
+.draft-insight-row > span:not(:first-child) {
+  text-align: right;
+}
+
 .team .panel-body {
   padding: 0;
 }
@@ -889,6 +922,12 @@ input::placeholder {
 
   .stat-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .draft-insight-head,
+  .draft-insight-row {
+    grid-template-columns: minmax(0, 1fr) 58px 36px 82px 42px;
+    gap: 6px;
   }
 
   .live-grid {

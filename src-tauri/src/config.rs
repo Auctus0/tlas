@@ -9,6 +9,9 @@ pub struct Settings {
     pub auto_update: bool,
     /// Varsayılan kapalı. Açılırsa şampiyon meta verisi OP.GG MCP'den çekilir.
     pub experimental_meta: bool,
+    pub auto_accept: bool,
+    pub auto_pick_champion_id: Option<i64>,
+    pub auto_ban_champion_id: Option<i64>,
 }
 
 impl Default for Settings {
@@ -16,6 +19,9 @@ impl Default for Settings {
         Self {
             auto_update: true,
             experimental_meta: false,
+            auto_accept: false,
+            auto_pick_champion_id: None,
+            auto_ban_champion_id: None,
         }
     }
 }

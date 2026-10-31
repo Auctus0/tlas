@@ -8,9 +8,10 @@ use tauri::State;
 use crate::config::Settings;
 use crate::db::LpSnapshot;
 use crate::models::{
-    AccountOverview, BuildItem, ChampionStat, ChampSelectView, LcuStatus, LiveGameView, LivePlayer,
-    LobbyMember, LobbyView, LpPoint, MatchDetail, MatchPlayer, MatchSummary, MatchTeam, MetaReport,
-    PersonalBuild, PlayerCard, RankView, ScoutCache, SessionSummary, SummonerInfo,
+    AccountOverview, BuildItem, ChampSelectView, ChampionStat, DraftInsight, LcuStatus,
+    LiveGameView, LivePlayer, LobbyMember, LobbyView, LpPoint, MatchDetail, MatchPlayer,
+    MatchSummary, MatchTeam, MetaReport, PersonalBuild, PlayerCard, RankView, ScoutCache,
+    SessionSummary, SummonerInfo,
 };
 use crate::state::AppState;
 
@@ -24,6 +25,7 @@ const HISTORY_CACHE_SECS: i64 = 60;
 const MASTERY_CACHE_SECS: i64 = 3_600;
 /// Geçmiş sorgusu her zaman aynı genişlikte yapılır; farklı komutlar paylaşır.
 const HISTORY_COUNT: u32 = 50;
+const GAME_DETAIL_CACHE_SECS: i64 = 7 * 86_400;
 
 const POSITION_ORDER: [&str; 5] = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"];
 const BOOTS: [i64; 12] = [
@@ -39,7 +41,11 @@ pub async fn lcu_status(state: State<'_, AppState>) -> Result<LcuStatus, String>
 #[tauri::command]
 pub async fn champ_select(state: State<'_, AppState>) -> Result<Option<ChampSelectView>, String> {
     let app = state.inner();
-    let session = app.lcu.champ_select().await.map_err(|error| error.to_string())?;
+    let session = app
+        .lcu
+        .champ_select()
+        .await
+        .map_err(|error| error.to_string())?;
 
     let Some(session) = session else {
         return Ok(None);
@@ -65,7 +71,7 @@ pub async fn champ_select(state: State<'_, AppState>) -> Result<Option<ChampSele
         .get("localPlayerCellId")
         .and_then(|value| value.as_i64());
 
-    let my_champion_id = my_team
+    let local_player = my_team
         .iter()
         .find(|player| {
             player
@@ -79,9 +85,16 @@ pub async fn champ_select(state: State<'_, AppState>) -> Result<Option<ChampSele
                     player.get("cellId").and_then(|value| value.as_i64()) == Some(cell_id)
                 })
             })
-        })
+        });
+
+    let my_champion_id = local_player
         .and_then(|player| player.get("championId"))
         .and_then(|value| value.as_i64());
+    let my_position = local_player
+        .and_then(|player| player.get("assignedPosition"))
+        .and_then(|value| value.as_str())
+        .filter(|position| POSITION_ORDER.contains(position))
+        .map(String::from);
 
     let (allies, enemies) = tokio::join!(
         build_team(app, &session, "myTeam", true),
@@ -93,8 +106,56 @@ pub async fn champ_select(state: State<'_, AppState>) -> Result<Option<ChampSele
         allies,
         enemies,
         my_champion_id,
+        my_position,
         timer,
     }))
+}
+
+#[tauri::command]
+pub async fn draft_insights(state: State<'_, AppState>) -> Result<Vec<DraftInsight>, String> {
+    let app = state.inner();
+    let puuid = current_puuid(app).await?;
+    let history = cached_history(app, &puuid)
+        .await
+        .ok_or_else(|| "Maç geçmişi alınamadı. LoL istemcisi açık olmalı.".to_string())?;
+
+    let games: Vec<Value> = history_games(&history)
+        .iter()
+        .take(HISTORY_COUNT as usize)
+        .filter(|game| {
+            game.get("queueId")
+                .and_then(Value::as_i64)
+                .is_some_and(is_summoners_rift)
+        })
+        .cloned()
+        .collect();
+
+    // Özet geçmişinde rol bulunmayabilir. Tam maç detaylarını cache'leyerek
+    // rol istatistiklerini sonraki taslaklarda ek LCU yükü oluşturmadan kullan.
+    let detailed_games: Vec<Value> = futures::stream::iter(games)
+        .map(|summary| {
+            let app = app;
+            let puuid = puuid.clone();
+            async move {
+                let has_position = lcu_participant(&summary, &puuid)
+                    .and_then(|participant| role_from_timeline(participant.get("timeline")))
+                    .is_some();
+                if has_position {
+                    return summary;
+                }
+
+                let game_id = summary.get("gameId").and_then(Value::as_i64);
+                match game_id {
+                    Some(game_id) => cached_game_detail(app, game_id).await.unwrap_or(summary),
+                    None => summary,
+                }
+            }
+        })
+        .buffered(6)
+        .collect()
+        .await;
+
+    Ok(draft_insights_from_games(&detailed_games, &puuid))
 }
 
 async fn build_team(
@@ -170,7 +231,8 @@ fn base_card(player: &Value, summoner: Option<Value>, is_ally: bool) -> PlayerCa
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
                 display_name = Some(format!("{}#{}", game_name, tag_line));
-            } else if let Some(name) = summoner.get("displayName").and_then(|value| value.as_str()) {
+            } else if let Some(name) = summoner.get("displayName").and_then(|value| value.as_str())
+            {
                 display_name = Some(name.to_string());
             }
 
@@ -229,7 +291,10 @@ async fn enrich_card(app: &AppState, card: &mut PlayerCard) {
 
     if let Ok(stats) = app.lcu.ranked_stats(&puuid).await {
         if let Some(entry) = pick_solo_entry(&stats) {
-            scout.tier = entry.get("tier").and_then(|value| value.as_str()).map(String::from);
+            scout.tier = entry
+                .get("tier")
+                .and_then(|value| value.as_str())
+                .map(String::from);
             scout.division = entry
                 .get("division")
                 .and_then(|value| value.as_str())
@@ -246,7 +311,10 @@ async fn enrich_card(app: &AppState, card: &mut PlayerCard) {
         let mut games = 0i64;
 
         for game in history_games(&history) {
-            let queue_id = game.get("queueId").and_then(|value| value.as_i64()).unwrap_or(0);
+            let queue_id = game
+                .get("queueId")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
             if !is_summoners_rift(queue_id) {
                 continue;
             }
@@ -318,6 +386,21 @@ async fn cached_history(app: &AppState, puuid: &str) -> Option<Value> {
         let _ = app.db.kv_set(&key, &serialized);
     }
 
+    Some(value)
+}
+
+async fn cached_game_detail(app: &AppState, game_id: i64) -> Option<Value> {
+    let key = format!("match-detail:v1:{game_id}");
+    if let Some(cached) = app.db.kv_get(&key, GAME_DETAIL_CACHE_SECS) {
+        if let Ok(value) = serde_json::from_str::<Value>(&cached) {
+            return Some(value);
+        }
+    }
+
+    let value = app.lcu.game_detail(game_id).await.ok()?;
+    if let Ok(serialized) = serde_json::to_string(&value) {
+        let _ = app.db.kv_set(&key, &serialized);
+    }
     Some(value)
 }
 
@@ -457,9 +540,9 @@ pub async fn recent_matches(
         .to_string();
 
     let limit = count.unwrap_or(20).clamp(1, 50);
-    let history = cached_history(app, &puuid).await.ok_or_else(|| {
-        "Maç geçmişi alınamadı. LoL istemcisi açık olmalı.".to_string()
-    })?;
+    let history = cached_history(app, &puuid)
+        .await
+        .ok_or_else(|| "Maç geçmişi alınamadı. LoL istemcisi açık olmalı.".to_string())?;
 
     // Özet listede rol bilgisi yok; oyun detayından tamamla (en fazla 6 eşzamanlı).
     let mut summaries: Vec<MatchSummary> = history_games(&history)
@@ -480,11 +563,10 @@ pub async fn recent_matches(
             let puuid = puuid.clone();
 
             async move {
-                let role = match app.lcu.game_detail(game_id).await {
-                    Ok(detail) => lcu_participant(&detail, &puuid)
-                        .and_then(|participant| role_from_timeline(participant.get("timeline"))),
-                    Err(_) => None,
-                };
+                let role = cached_game_detail(app, game_id).await.and_then(|detail| {
+                    lcu_participant(&detail, &puuid)
+                        .and_then(|participant| role_from_timeline(participant.get("timeline")))
+                });
 
                 (game_id, role)
             }
@@ -578,7 +660,9 @@ pub async fn account_overview(state: State<'_, AppState>) -> Result<AccountOverv
         } else {
             format!("{}#{}", game_name, tag_line)
         },
-        level: summoner.get("summonerLevel").and_then(|value| value.as_i64()),
+        level: summoner
+            .get("summonerLevel")
+            .and_then(|value| value.as_i64()),
         icon_id: summoner
             .get("profileIconId")
             .and_then(|value| value.as_i64()),
@@ -586,12 +670,9 @@ pub async fn account_overview(state: State<'_, AppState>) -> Result<AccountOverv
 
     let stats = app.lcu.ranked_stats(&puuid).await.ok();
 
-    let solo_entry = stats.as_ref().and_then(|stats| {
-        queue_entry(
-            stats,
-            &["RANKED_SOLO_5x5", "JADE_RANKED_SOLO_5x5"],
-        )
-    });
+    let solo_entry = stats
+        .as_ref()
+        .and_then(|stats| queue_entry(stats, &["RANKED_SOLO_5x5", "JADE_RANKED_SOLO_5x5"]));
     let flex_entry = stats
         .as_ref()
         .and_then(|stats| queue_entry(stats, &["RANKED_FLEX_SR"]));
@@ -739,7 +820,8 @@ pub async fn lobby_view(state: State<'_, AppState>) -> Result<Option<LobbyView>,
                 } else {
                     format!("{}#{}", self_name, self_tag)
                 };
-            } else if let Some(value) = member.get("summonerName").and_then(|value| value.as_str()) {
+            } else if let Some(value) = member.get("summonerName").and_then(|value| value.as_str())
+            {
                 name = value.to_string();
             }
 
@@ -880,7 +962,10 @@ fn rank_view(queue: &str, label: &str, entry: Option<&Value>) -> RankView {
         .get("tier")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    let wins = entry.get("wins").and_then(|value| value.as_i64()).unwrap_or(0);
+    let wins = entry
+        .get("wins")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
     let losses = entry
         .get("losses")
         .and_then(|value| value.as_i64())
@@ -895,9 +980,7 @@ fn rank_view(queue: &str, label: &str, entry: Option<&Value>) -> RankView {
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty() && *value != "NA")
             .map(title_case),
-        lp: entry
-            .get("leaguePoints")
-            .and_then(|value| value.as_i64()),
+        lp: entry.get("leaguePoints").and_then(|value| value.as_i64()),
         wins,
         losses,
         winrate: rate(wins, wins + losses),
@@ -928,7 +1011,10 @@ fn record_lp(app: &AppState, puuid: &str, queue: &str, entry: &Value) {
         .get("leaguePoints")
         .and_then(|value| value.as_i64())
         .unwrap_or(0);
-    let wins = entry.get("wins").and_then(|value| value.as_i64()).unwrap_or(0);
+    let wins = entry
+        .get("wins")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
     let losses = entry
         .get("losses")
         .and_then(|value| value.as_i64())
@@ -1026,7 +1112,10 @@ fn session_from_history(history: &Value, puuid: &str, since: i64) -> SessionSumm
             .get("win")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        let kills = stats.get("kills").and_then(|value| value.as_i64()).unwrap_or(0);
+        let kills = stats
+            .get("kills")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
         let deaths = stats
             .get("deaths")
             .and_then(|value| value.as_i64())
@@ -1068,9 +1157,7 @@ fn session_lp_delta(app: &AppState, puuid: &str, queue: &str, since: i64) -> Opt
     let latest = snapshots.first()?;
     let earliest = snapshots.last()?;
 
-    (snapshots.len() >= 2
-        && latest.tier == earliest.tier
-        && latest.division == earliest.division)
+    (snapshots.len() >= 2 && latest.tier == earliest.tier && latest.division == earliest.division)
         .then(|| latest.lp - earliest.lp)
 }
 
@@ -1097,11 +1184,7 @@ async fn mastery_points(app: &AppState, puuid: &str) -> HashMap<i64, i64> {
     map
 }
 
-fn champion_stats(
-    history: &Value,
-    puuid: &str,
-    mastery: &HashMap<i64, i64>,
-) -> Vec<ChampionStat> {
+fn champion_stats(history: &Value, puuid: &str, mastery: &HashMap<i64, i64>) -> Vec<ChampionStat> {
     #[derive(Default)]
     struct Acc {
         games: i64,
@@ -1166,9 +1249,7 @@ fn champion_stats(
             games: entry.games,
             wins: entry.wins,
             winrate: entry.wins as f64 / entry.games.max(1) as f64 * 100.0,
-            kda: round2(
-                (entry.kills + entry.assists) as f64 / entry.deaths.max(1) as f64,
-            ),
+            kda: round2((entry.kills + entry.assists) as f64 / entry.deaths.max(1) as f64),
             points: mastery.get(&champion_id).copied(),
         })
         .collect();
@@ -1181,17 +1262,82 @@ fn champion_stats(
             .games
             .cmp(&left.games)
             .then_with(|| right.winrate.total_cmp(&left.winrate))
-            .then_with(|| {
-                right
-                    .points
-                    .unwrap_or(0)
-                    .cmp(&left.points.unwrap_or(0))
-            })
+            .then_with(|| right.points.unwrap_or(0).cmp(&left.points.unwrap_or(0)))
             .then_with(|| left.champion_id.cmp(&right.champion_id))
     });
     champions.truncate(6);
 
     champions
+}
+
+fn draft_insights_from_games(games: &[Value], puuid: &str) -> Vec<DraftInsight> {
+    #[derive(Default)]
+    struct Acc {
+        games: i64,
+        wins: i64,
+        kills: i64,
+        deaths: i64,
+        assists: i64,
+    }
+
+    let mut acc: HashMap<(i64, String), Acc> = HashMap::new();
+    for game in games {
+        let queue_id = game.get("queueId").and_then(Value::as_i64).unwrap_or(0);
+        if !is_summoners_rift(queue_id) {
+            continue;
+        }
+
+        let Some(participant) = lcu_participant(game, puuid) else {
+            continue;
+        };
+        let Some(position) = role_from_timeline(participant.get("timeline")) else {
+            continue;
+        };
+        let champion_id = participant
+            .get("championId")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let Some(stats) = participant.get("stats") else {
+            continue;
+        };
+        if champion_id <= 0 {
+            continue;
+        }
+
+        let entry = acc.entry((champion_id, position)).or_default();
+        entry.games += 1;
+        if stats.get("win").and_then(Value::as_bool).unwrap_or(false) {
+            entry.wins += 1;
+        }
+        entry.kills += stats_i64(Some(stats), "kills");
+        entry.deaths += stats_i64(Some(stats), "deaths");
+        entry.assists += stats_i64(Some(stats), "assists");
+    }
+
+    let mut insights: Vec<DraftInsight> = acc
+        .into_iter()
+        .map(|((champion_id, position), entry)| DraftInsight {
+            champion_id,
+            position: Some(position),
+            games: entry.games,
+            wins: entry.wins,
+            winrate: round2(entry.wins as f64 / entry.games.max(1) as f64 * 100.0),
+            kda: round2((entry.kills + entry.assists) as f64 / entry.deaths.max(1) as f64),
+        })
+        .collect();
+
+    insights.sort_by(|left, right| {
+        right
+            .games
+            .cmp(&left.games)
+            .then_with(|| right.winrate.total_cmp(&left.winrate))
+            .then_with(|| left.champion_id.cmp(&right.champion_id))
+            .then_with(|| {
+                position_rank(left.position.as_deref())
+                    .cmp(&position_rank(right.position.as_deref()))
+            })
+    });
+    insights
 }
 
 fn streak_of(form: &[bool]) -> i64 {
@@ -1207,11 +1353,7 @@ fn streak_of(form: &[bool]) -> i64 {
         count += 1;
     }
 
-    if *first {
-        count
-    } else {
-        -count
-    }
+    if *first { count } else { -count }
 }
 
 fn rate(part: i64, total: i64) -> Option<f64> {
@@ -1308,10 +1450,7 @@ fn role_from_timeline(timeline: Option<&Value>) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn match_detail(
-    state: State<'_, AppState>,
-    game_id: i64,
-) -> Result<MatchDetail, String> {
+pub async fn match_detail(state: State<'_, AppState>, game_id: i64) -> Result<MatchDetail, String> {
     let app = state.inner();
     let puuid = current_puuid(app).await?;
 
@@ -1420,6 +1559,7 @@ pub async fn live_game(state: State<'_, AppState>) -> Result<Option<LiveGameView
                     .unwrap_or(0),
                 position: live_position(player),
                 is_ally: true,
+                is_me: summoner_id.is_some() && summoner_id == self_id,
             }
         }
     }))
@@ -1437,6 +1577,7 @@ pub async fn live_game(state: State<'_, AppState>) -> Result<Option<LiveGameView
                 .unwrap_or(0),
             position: live_position(player),
             is_ally: false,
+            is_me: false,
         })
         .collect();
 
@@ -1709,9 +1850,7 @@ fn build_from_history(champion_id: i64, history: &Value, puuid: &str) -> Persona
         games,
         wins,
         winrate: rate(wins, games).unwrap_or(0.0),
-        kda: round2(
-            (kills_total + assists_total) as f64 / deaths_total.max(1) as f64,
-        ),
+        kda: round2((kills_total + assists_total) as f64 / deaths_total.max(1) as f64),
         avg_cs: if games > 0 {
             round2(cs_total as f64 / games as f64)
         } else {
@@ -1739,11 +1878,7 @@ fn normalize_duration(game: &Value) -> i64 {
         .and_then(|value| value.as_i64())
         .unwrap_or(0);
 
-    if raw > 100_000 {
-        raw / 1_000
-    } else {
-        raw
-    }
+    if raw > 100_000 { raw / 1_000 } else { raw }
 }
 
 fn player_name(player: Option<&Value>) -> String {
@@ -1787,9 +1922,7 @@ fn live_position(player: &Value) -> Option<String> {
         .or_else(|| player.get("assignedPosition"))
         .and_then(|value| value.as_str())?;
 
-    POSITION_ORDER
-        .contains(&value)
-        .then(|| value.to_string())
+    POSITION_ORDER.contains(&value).then(|| value.to_string())
 }
 
 fn position_rank(position: Option<&str>) -> usize {
@@ -1809,7 +1942,10 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
-    state.config.set(settings).map_err(|error| error.to_string())
+    state
+        .config
+        .set(settings)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1894,7 +2030,10 @@ mod tests {
     #[test]
     fn maps_duo_support_to_utility() {
         let timeline = json!({ "lane": "BOTTOM", "role": "DUO_SUPPORT" });
-        assert_eq!(role_from_timeline(Some(&timeline)).as_deref(), Some("UTILITY"));
+        assert_eq!(
+            role_from_timeline(Some(&timeline)).as_deref(),
+            Some("UTILITY")
+        );
 
         let unknown = json!({ "lane": "NONE", "role": "SOLO" });
         assert_eq!(role_from_timeline(Some(&unknown)), None);
@@ -1906,6 +2045,30 @@ mod tests {
         assert!(is_summoners_rift(440));
         assert!(!is_summoners_rift(450));
         assert!(!is_summoners_rift(1700));
+    }
+
+    #[test]
+    fn aggregates_draft_insights_by_champion_and_role() {
+        let jungle_win = history_game(1, 141, true, &[], 1_700_000_000_000);
+        let jungle_loss = history_game(2, 141, false, &[], 1_700_000_001_000);
+        let mut middle = history_game(3, 141, true, &[], 1_700_000_002_000);
+        middle["participants"][0]["timeline"]["lane"] = json!("MIDDLE");
+        let mut unknown_role = history_game(4, 141, true, &[], 1_700_000_003_000);
+        unknown_role["participants"][0]["timeline"]["lane"] = json!("NONE");
+        let mut aram = history_game(5, 141, true, &[], 1_700_000_004_000);
+        aram["queueId"] = json!(450);
+
+        let insights =
+            draft_insights_from_games(&[jungle_win, jungle_loss, middle, unknown_role, aram], "p1");
+
+        assert_eq!(insights.len(), 2);
+        assert_eq!(insights[0].position.as_deref(), Some("JUNGLE"));
+        assert_eq!(insights[0].games, 2);
+        assert_eq!(insights[0].wins, 1);
+        assert_eq!(insights[0].winrate, 50.0);
+        assert_eq!(insights[0].kda, 6.0);
+        assert_eq!(insights[1].position.as_deref(), Some("MIDDLE"));
+        assert_eq!(insights[1].games, 1);
     }
 
     #[test]
@@ -2052,15 +2215,19 @@ mod tests {
         assert_eq!(build.games, 3);
         assert_eq!(build.wins, 2);
         assert_eq!(build.position.as_deref(), Some("JUNGLE"));
-        assert!(build
-            .core_items
-            .iter()
-            .any(|item| item.item_id == 3153 && item.count == 2));
+        assert!(
+            build
+                .core_items
+                .iter()
+                .any(|item| item.item_id == 3153 && item.count == 2)
+        );
         assert_eq!(build.boots[0].item_id, 3006);
-        assert!(build
-            .core_items
-            .iter()
-            .all(|item| !BOOTS.contains(&item.item_id)));
+        assert!(
+            build
+                .core_items
+                .iter()
+                .all(|item| !BOOTS.contains(&item.item_id))
+        );
     }
 
     #[test]

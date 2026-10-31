@@ -10,10 +10,12 @@
   import PlayerCard from "$lib/components/PlayerCard.svelte";
   import DraftComp from "$lib/components/DraftComp.svelte";
   import Sparkline from "$lib/components/Sparkline.svelte";
+  import { loadDdragon } from "$lib/ddragon";
   import {
     clearCache,
     getAccountOverview,
     getChampSelect,
+    getDraftInsights,
     getLiveGame,
     getLobby,
     getMatchDetail,
@@ -24,6 +26,7 @@
     getStatus,
     openExternal,
     saveSettings,
+    setOverlayVisible,
   } from "$lib/api";
   import {
     championIcon,
@@ -46,6 +49,7 @@
     AccountOverview,
     ChampionInfo,
     ChampSelectView,
+    DraftInsight,
     LcuStatus,
     LiveGameView,
     LobbyView,
@@ -61,6 +65,7 @@
   let tab = $state<Tab>("home");
   let status = $state<LcuStatus | null>(null);
   let champ = $state<ChampSelectView | null>(null);
+  let draftInsights = $state<DraftInsight[]>([]);
   let matches = $state<MatchSummary[]>([]);
   let overview = $state<AccountOverview | null>(null);
   let lobby = $state<LobbyView | null>(null);
@@ -74,6 +79,9 @@
   let settings = $state<Settings>({
     autoUpdate: true,
     experimentalMeta: false,
+    autoAccept: false,
+    autoPickChampionId: null,
+    autoBanChampionId: null,
   });
   let champions = $state<Record<number, ChampionInfo>>({});
   let items = $state<Record<number, string>>({});
@@ -81,11 +89,16 @@
   let appVersion = $state(__APP_VERSION__);
 
   let statusLoading = $state(true);
+  let statusRequestInFlight = $state(false);
   let champLoading = $state(false);
+  let draftInsightsLoading = $state(false);
+  let draftInsightsLoaded = $state(false);
+  let draftInsightsError = $state("");
   let matchesLoading = $state(false);
   let matchesLoaded = $state(false);
   let matchesError = $state("");
   let homeLoading = $state(false);
+  let homeWarning = $state("");
   let matchDetailLoading = $state(false);
   let matchDetailError = $state("");
   let buildLoading = $state(false);
@@ -133,86 +146,33 @@
   }
 
   async function loadChampions() {
-    const cached = localStorage.getItem("tlas:champions:v2");
+    const data = await loadDdragon();
+    if (!data) return;
 
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as {
-          at: number;
-          version: string;
-          map: Record<number, ChampionInfo>;
-        };
-
-        if (Date.now() - parsed.at < 7 * 86_400_000) {
-          champions = parsed.map;
-          ddragonVersion = parsed.version;
-          loadItems(parsed.version);
-          return;
-        }
-      } catch {
-        // Bozuk cache'i yoksay.
-      }
-    }
-
-    try {
-      const versions = (await fetch(
-        "https://ddragon.leagueoflegends.com/api/versions.json",
-      ).then((response) => response.json())) as string[];
-
-      const version = versions[0];
-      const data = await fetch(
-        `https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/champion.json`,
-      ).then((response) => response.json());
-
-      const map: Record<number, ChampionInfo> = {};
-      for (const champion of Object.values(data.data) as Array<{
-        key: string;
-        id: string;
-        name: string;
-        tags?: string[];
-        info?: { attack: number; magic: number; defense: number; difficulty: number };
-      }>) {
-        map[Number(champion.key)] = {
-          id: champion.id,
-          name: champion.name,
-          tags: champion.tags,
-          info: champion.info,
-        };
-      }
-
-      ddragonVersion = version;
-      champions = map;
-      localStorage.setItem(
-        "tlas:champions:v2",
-        JSON.stringify({ at: Date.now(), version, map }),
-      );
-
-      loadItems(version);
-    } catch {
-      // Offline: placeholder ikonlar kalır.
-    }
+    champions = data.champions;
+    items = data.items;
+    ddragonVersion = data.version;
   }
 
-  async function loadItems(version: string) {
+  async function refreshDraftInsights(force = false) {
+    if (draftInsightsLoading || (draftInsightsLoaded && !force)) return;
+    draftInsightsLoading = true;
+    draftInsightsError = "";
+
     try {
-      const data = await fetch(
-        `https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/item.json`,
-      ).then((response) => response.json());
-
-      const map: Record<number, string> = {};
-      for (const [id, item] of Object.entries(
-        data.data as Record<string, { name: string }>,
-      )) {
-        map[Number(id)] = item.name;
-      }
-
-      items = map;
-    } catch {
-      // Item adları yoksa yalnızca kimlik gösterilir.
+      draftInsights = await getDraftInsights();
+      draftInsightsLoaded = true;
+    } catch (error) {
+      draftInsightsError = errorText(error, "Kişisel maç istatistikleri alınamadı.");
+    } finally {
+      draftInsightsLoading = false;
     }
   }
 
   async function refreshStatus() {
+    if (statusRequestInFlight) return;
+    statusRequestInFlight = true;
+
     try {
       const next = await getStatus();
       const previousPhase = status?.phase ?? null;
@@ -220,6 +180,7 @@
 
       if (next.phase === "ChampSelect" && previousPhase !== "ChampSelect") {
         refreshChamp(true);
+        refreshDraftInsights(true);
       }
 
       if (next.phase !== "ChampSelect" && previousPhase === "ChampSelect") {
@@ -235,6 +196,7 @@
       };
     } finally {
       statusLoading = false;
+      statusRequestInFlight = false;
     }
   }
 
@@ -261,6 +223,7 @@
       overview = null;
       lobby = null;
       liveGame = null;
+      homeWarning = "";
       return;
     }
 
@@ -271,21 +234,29 @@
     homeLoading = true;
 
     try {
-      const [nextOverview, nextLobby, nextLive] = await Promise.all([
-        getAccountOverview().catch(() => null),
-        getLobby().catch(() => null),
-        getLiveGame().catch(() => null),
+      const [overviewResult, lobbyResult, liveResult] = await Promise.allSettled([
+        getAccountOverview(),
+        getLobby(),
+        getLiveGame(),
       ]);
 
-      overview = nextOverview;
-      lobby = nextLobby;
-      liveGame = nextLive;
+      const failures: string[] = [];
+      if (overviewResult.status === "fulfilled") {
+        overview = overviewResult.value;
+      } else {
+        failures.push(`Hesap: ${errorText(overviewResult.reason, "veri alınamadı")}`);
+      }
+      if (lobbyResult.status === "fulfilled") lobby = lobbyResult.value;
+      else failures.push(`Lobi: ${errorText(lobbyResult.reason, "veri alınamadı")}`);
+      if (liveResult.status === "fulfilled") liveGame = liveResult.value;
+      else failures.push(`Canlı maç: ${errorText(liveResult.reason, "veri alınamadı")}`);
+      homeWarning = failures.join(" · ");
       lastHomeFetch = Date.now();
 
       // LCU geçmişi geç yükleyebilir; boş geldiyse bir kez daha dene.
-      if (nextOverview && nextOverview.recentGames > 0) {
+      if (overviewResult.status === "fulfilled" && overviewResult.value.recentGames > 0) {
         homeRetried = false;
-      } else if (nextOverview && !homeRetried) {
+      } else if (overviewResult.status === "fulfilled" && !homeRetried) {
         homeRetried = true;
         setTimeout(() => {
           if (tab === "home" && status?.connected) refreshHome(true);
@@ -570,6 +541,19 @@
   const liveActive = $derived(
     phase === "InProgress" || phase === "GameStart" || phase === "Reconnect",
   );
+  const showOverlay = $derived(phase === "ChampSelect" || liveActive);
+  const visibleDraftInsights = $derived.by(() =>
+    draftInsights
+      .filter((insight) => !champ?.myPosition || insight.position === champ.myPosition)
+      .slice(0, 5),
+  );
+
+  $effect(() => {
+    // Ayrı pencere draft ve aktif maç sırasında görünür.
+    setOverlayVisible(showOverlay).catch(() => {
+      // Tarayıcı önizlemesinde kaplama penceresi yok.
+    });
+  });
 
   $effect(() => {
     if (!liveActive) {
@@ -684,15 +668,28 @@
         </div>
         <button
           class="btn"
-          onclick={() => {
-            refreshStatus();
-            refreshHome(true);
+          onclick={async () => {
+            await refreshStatus();
+            await refreshHome(true);
           }}
-          disabled={homeLoading}
+          disabled={homeLoading || statusRequestInFlight}
         >
-          {homeLoading ? "Yükleniyor…" : "Yenile"}
+          {homeLoading || statusRequestInFlight ? "Yükleniyor…" : "Yenile"}
         </button>
       </div>
+
+      {#if !status?.connected && !statusLoading}
+        <div class="notice" role="status">
+          LoL istemcisine bağlanılamadı. Tlas'ın hesap ve maç verilerini gösterebilmesi için istemciyi aç.
+        </div>
+      {:else if homeWarning}
+        <div class="notice" role="alert">
+          <span>Bazı veriler yenilenemedi: {homeWarning}</span>
+          <button class="btn small" type="button" onclick={() => refreshHome(true)} disabled={homeLoading}>
+            Tekrar dene
+          </button>
+        </div>
+      {/if}
 
       <div class="panel">
         <div class="account">
@@ -1179,7 +1176,10 @@
         </div>
         <button
           class="btn"
-          onclick={() => refreshChamp(true)}
+          onclick={() => {
+            refreshChamp(true);
+            refreshDraftInsights(true);
+          }}
           disabled={champLoading}
         >
           {champLoading ? "Yükleniyor…" : "Yenile"}
@@ -1189,11 +1189,72 @@
       {#if !champ}
         <div class="panel">
           <div class="empty">
-            <strong>Şampiyon seçimi bekleniyor</strong>
-            Sıra başladığında takım ve rakip listesi burada görünür.
+            <strong>{status?.connected ? "Şampiyon seçimi bekleniyor" : "LoL istemcisine bağlanılamadı"}</strong>
+            {status?.connected
+              ? "Sıra başladığında takım ve rakip listesi burada görünür."
+              : "Şampiyon seçimi verilerini görmek için LoL istemcisini aç."}
           </div>
         </div>
       {:else}
+        <section class="panel draft-insights">
+          <div class="panel-head">
+            <span>Kişisel şampiyon havuzu</span>
+            <span class="head-note">
+              {champ.myPosition ? roleName(champ.myPosition) : "tüm roller"} · son 50 maç
+            </span>
+          </div>
+          <div class="panel-body">
+            <p class="hint">
+              Geçmiş performans özeti; seçim önerisi değildir. Takım kompozisyonu ayrı olarak aşağıda gösterilir.
+            </p>
+            {#if draftInsightsLoading && !draftInsightsLoaded}
+              <div class="empty">Maç geçmişin inceleniyor…</div>
+            {:else if draftInsightsError}
+              <div class="empty">
+                <strong>İstatistikler alınamadı</strong>
+                {draftInsightsError}
+                <div class="empty-actions">
+                  <button class="btn small" type="button" onclick={() => refreshDraftInsights(true)} disabled={draftInsightsLoading}>
+                    Tekrar dene
+                  </button>
+                </div>
+              </div>
+            {:else if visibleDraftInsights.length === 0}
+              <div class="empty">
+                <strong>Henüz yeterli rol verisi yok</strong>
+                Son 50 maçta bu rol için ayrıştırılabilir şampiyon istatistiği bulunamadı.
+              </div>
+            {:else}
+              <div class="draft-insight-head" aria-hidden="true">
+                <span>Şampiyon</span><span>Rol</span><span>Maç</span><span>Galibiyet</span><span>KDA</span>
+              </div>
+              {#each visibleDraftInsights as insight (`${insight.championId}-${insight.position}`)}
+                <div class="draft-insight-row">
+                  <span class="member">
+                    <span class="member-icon">
+                      {#if champions[insight.championId]}
+                        <img
+                          src={championIcon(champions[insight.championId].id, ddragonVersion)}
+                          alt=""
+                          loading="lazy"
+                          onerror={(event) => ((event.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                        />
+                      {/if}
+                    </span>
+                    <span class="member-name">
+                      {champions[insight.championId]?.name ?? `Şampiyon ${insight.championId}`}
+                    </span>
+                  </span>
+                  <span>{roleName(insight.position)}</span>
+                  <span class="num">{insight.games}</span>
+                  <span class="num">{percent(insight.winrate)} · {insight.wins}G</span>
+                  <span class="num">{insight.kda.toFixed(2)}</span>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        </section>
+
         {#if enemiesHidden}
           <div class="notice">
             Rakip isimleri gizli.
@@ -1254,8 +1315,8 @@
       {#if matchesError && matches.length > 0}
         <div class="notice">
           {matchesError}
-          <button class="btn small ghost" onclick={() => (tab = "settings")}>
-            Ayarlar
+            <button class="btn small ghost" onclick={() => loadMatches(true)} disabled={matchesLoading}>
+              Tekrar dene
           </button>
         </div>
       {/if}
@@ -1271,8 +1332,8 @@
               <strong>Maç geçmişi alınamadı</strong>
               {matchesError}
               <div class="empty-actions">
-                <button class="btn small" onclick={() => (tab = "settings")}>
-                  Ayarlar
+                <button class="btn small" onclick={() => loadMatches(true)} disabled={matchesLoading}>
+                  Tekrar dene
                 </button>
               </div>
             {:else}
@@ -1359,6 +1420,30 @@
                 <span class="value">{status?.platform ?? "—"}</span>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">LCU otomasyonu</div>
+          <div class="panel-body">
+            <label class="switch"><input type="checkbox" bind:checked={settings.autoAccept} /> Maçı otomatik kabul et</label>
+            <label class="field-label">Otomatik pick şampiyonu
+              <select bind:value={settings.autoPickChampionId}>
+              <option value={null}>Kapalı</option>
+              {#each Object.entries(champions).sort(([, a], [, b]) => a.name.localeCompare(b.name, "tr")) as [id, champion] (champion.id)}
+                <option value={Number(id)}>{champion.name}</option>
+              {/each}
+              </select>
+            </label>
+            <label class="field-label">Otomatik ban şampiyonu
+              <select bind:value={settings.autoBanChampionId}>
+              <option value={null}>Kapalı</option>
+              {#each Object.entries(champions).sort(([, a], [, b]) => a.name.localeCompare(b.name, "tr")) as [id, champion] (champion.id)}
+                <option value={Number(id)}>{champion.name}</option>
+              {/each}
+              </select>
+            </label>
+            <p class="hint">Açık olan işlemler 2–3 saniye rastgele gecikmeyle LCU üzerinden gönderilir. Otomasyon varsayılan olarak kapalıdır.</p>
           </div>
         </section>
 

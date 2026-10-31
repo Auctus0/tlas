@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use parking_lot::Mutex;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 pub struct Database {
     conn: Mutex<Connection>,

@@ -38,7 +38,19 @@ pub struct ChampSelectView {
     pub allies: Vec<PlayerCard>,
     pub enemies: Vec<PlayerCard>,
     pub my_champion_id: Option<i64>,
+    pub my_position: Option<String>,
     pub timer: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftInsight {
+    pub champion_id: i64,
+    pub position: Option<String>,
+    pub games: i64,
+    pub wins: i64,
+    pub winrate: f64,
+    pub kda: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,6 +210,7 @@ pub struct LivePlayer {
     pub champion_id: i64,
     pub position: Option<String>,
     pub is_ally: bool,
+    pub is_me: bool,
 }
 
 #[derive(Debug, Serialize)]
