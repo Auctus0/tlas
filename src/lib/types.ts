@@ -1,6 +1,7 @@
 export interface Settings {
   autoUpdate: boolean;
   experimentalMeta: boolean;
+  overlayEnabled: boolean;
   autoAccept: boolean;
   autoPickChampionId: number | null;
   autoBanChampionId: number | null;

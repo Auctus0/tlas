@@ -79,6 +79,7 @@
   let settings = $state<Settings>({
     autoUpdate: true,
     experimentalMeta: false,
+    overlayEnabled: true,
     autoAccept: false,
     autoPickChampionId: null,
     autoBanChampionId: null,
@@ -541,7 +542,9 @@
   const liveActive = $derived(
     phase === "InProgress" || phase === "GameStart" || phase === "Reconnect",
   );
-  const showOverlay = $derived(phase === "ChampSelect" || liveActive);
+  const showOverlay = $derived(
+    settings.overlayEnabled && (phase === "ChampSelect" || liveActive),
+  );
   const visibleDraftInsights = $derived.by(() =>
     draftInsights
       .filter((insight) => !champ?.myPosition || insight.position === champ.myPosition)
@@ -1420,6 +1423,20 @@
                 <span class="value">{status?.platform ?? "—"}</span>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">Kaplama</div>
+          <div class="panel-body">
+            <label class="switch">
+              <input type="checkbox" bind:checked={settings.overlayEnabled} />
+              Şampiyon seçimi ve maç sırasında rakip kaplamasını göster
+            </label>
+            <p class="hint">
+              Kaplama ayrı bir pencerede açılır; LoL istemcisinin yanına hizalanır ve
+              oyun içine müdahale etmez.
+            </p>
           </div>
         </section>
 

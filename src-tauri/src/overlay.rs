@@ -223,16 +223,20 @@ pub fn spawn_phase_watch(app: AppHandle) {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-            let phase = {
+            let (phase, overlay_enabled) = {
                 use tauri::Manager;
                 let state = app.state::<crate::state::AppState>();
-                state.lcu.phase().await.ok()
+                (
+                    state.lcu.phase().await.ok(),
+                    state.config.get().overlay_enabled,
+                )
             };
 
-            let should_show = matches!(
-                phase.as_deref(),
-                Some("ChampSelect" | "GameStart" | "InProgress" | "Reconnect")
-            );
+            let should_show = overlay_enabled
+                && matches!(
+                    phase.as_deref(),
+                    Some("ChampSelect" | "GameStart" | "InProgress" | "Reconnect")
+                );
             // Görünürken her turda konum tazelenir; istemci taşınırsa takip eder.
             let _ = set_visible(&app, should_show);
 

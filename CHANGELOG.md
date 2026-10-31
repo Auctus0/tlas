@@ -7,6 +7,7 @@ Tüm önemli değişiklikler bu dosyada tutulur. Sürümleme [SemVer](https://se
 - Ayarlardan ayrı ayrı açılabilen LCU otomatik maç kabulü, pick ve ban eklendi.
 - Seçilen pick/ban veya maç kabul komutu 2–3 saniye rastgele gecikmeyle gönderilir.
 - Otomasyon ayarları varsayılan olarak kapalıdır.
+- Kaplama Ayarlar'dan tamamen kapatılabiliyor (`overlayEnabled`, varsayılan açık).
 - Otomatik pick/ban artık LCU'nun `PATCH /lol-champ-select/v1/session/actions/{id}`
   uç noktasını kullanıyor ve yalnızca aksiyon sırası geldiğinde (`isInProgress`)
   gönderiliyor.

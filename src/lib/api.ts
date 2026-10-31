@@ -87,7 +87,7 @@ export const getLobby = async (): Promise<LobbyView | null> =>
 
 export const getSettings = async (): Promise<Settings> =>
   preview
-    ? { autoUpdate: true, experimentalMeta: false, autoAccept: false, autoPickChampionId: null, autoBanChampionId: null }
+    ? { autoUpdate: true, experimentalMeta: false, overlayEnabled: true, autoAccept: false, autoPickChampionId: null, autoBanChampionId: null }
     : invoke<Settings>("get_settings");
 
 export const saveSettings = async (settings: Settings): Promise<void> => {

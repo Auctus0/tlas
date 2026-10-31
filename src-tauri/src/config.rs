@@ -9,6 +9,8 @@ pub struct Settings {
     pub auto_update: bool,
     /// Varsayılan kapalı. Açılırsa şampiyon meta verisi OP.GG MCP'den çekilir.
     pub experimental_meta: bool,
+    /// Şampiyon seçimi ve aktif maç sırasında rakip kaplamasını göster.
+    pub overlay_enabled: bool,
     pub auto_accept: bool,
     pub auto_pick_champion_id: Option<i64>,
     pub auto_ban_champion_id: Option<i64>,
@@ -19,6 +21,7 @@ impl Default for Settings {
         Self {
             auto_update: true,
             experimental_meta: false,
+            overlay_enabled: true,
             auto_accept: false,
             auto_pick_champion_id: None,
             auto_ban_champion_id: None,
