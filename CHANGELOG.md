@@ -7,6 +7,14 @@ Tüm önemli değişiklikler bu dosyada tutulur. Sürümleme [SemVer](https://se
 - Ayarlardan ayrı ayrı açılabilen LCU otomatik maç kabulü, pick ve ban eklendi.
 - Seçilen pick/ban veya maç kabul komutu 2–3 saniye rastgele gecikmeyle gönderilir.
 - Otomasyon ayarları varsayılan olarak kapalıdır.
+- Otomatik pick/ban artık LCU'nun `PATCH /lol-champ-select/v1/session/actions/{id}`
+  uç noktasını kullanıyor ve yalnızca aksiyon sırası geldiğinde (`isInProgress`)
+  gönderiliyor.
+- Otomasyon isteği başarısız olursa geri çekilme uygulanıyor (2–16 sn).
+- Kaplama konumu monitör çalışma alanına kırpılıyor; maximize ve minimized
+  istemcide ekran dışına taşmıyor, negatif koordinatlı monitörler destekleniyor.
+- Kaplama görünürlüğü tek bir durumdan yönetiliyor; ana pencere tepsiye
+  kapandığında faz izleyicisiyle tutarsız kalmıyor.
 
 ## [0.1.3] — 2026-10-30
 
@@ -15,9 +23,9 @@ pencere, rakipleri tier ve karşı önerilerle özetler.
 
 ### Eklendi
 
-- **Şampiyon seçimi kaplaması**: LoL istemcisinin soluna hizalanan, çerçevesiz,
-  her zaman üstte ve odak çalmayan 360×400 pencere. Yalnızca şampiyon seçimi
-  sırasında görünür; istemci taşınırsa yeniden hizalanır.
+- **Şampiyon seçimi kaplaması**: LoL istemcisinin yanına hizalanan, çerçevesiz,
+  her zaman üstte ve odak çalmayan 360×400 pencere. Şampiyon seçimi ve aktif maç
+  sırasında görünür; konum düzenli olarak istemcinin monitörüne göre tazelenir.
 - Her rakip için şampiyon ikonu, pozisyon, OP.GG tier etiketi ve tahmini karşı
   rün/item önerisi. Deneysel meta kapalıyken tier yerine "—" gösterilir.
 - Kaplama, ana pencere tepsiye kapalıyken de çalışır (arka plan faz izleme).

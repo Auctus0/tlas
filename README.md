@@ -2,9 +2,11 @@
 
 LoL için taslak (draft) ve maç sonrası analiz masaüstü uygulaması.
 
-Tlas, LoL istemcisine salt okunur bağlanır; hesap özetini, şampiyon seçimini ve
-maç geçmişini tek ekranda toplar. İsteğe bağlı olarak şampiyon seçimi sırasında
-istemcinin yanında küçük bir rakip kaplaması açar.
+Tlas, LoL istemcisine LCU üzerinden bağlanır; hesap özetini, şampiyon seçimini ve
+maç geçmişini tek ekranda toplar. İsteğe bağlı olarak şampiyon seçimi ve aktif maç
+sırasında istemcinin yanında küçük bir rakip kaplaması açar. Varsayılan davranış
+okumadır; yalnızca Ayarlar'dan açılan otomasyon (maç kabul, pick, ban) LCU'ya
+yazma isteği gönderir.
 
 - **Stack:** Tauri 2 · Rust · Svelte 5 (SvelteKit) · TypeScript · SQLite
 - **Platform:** Windows 10/11
@@ -23,8 +25,9 @@ istemcinin yanında küçük bir rakip kaplaması açar.
 - **Canlı lobi:** lobideki oyuncular, roller ve dereceleri
 - **Canlı maç:** oyun sırasında takım ve rakip şampiyonları
 - **Şampiyon seçimi:** takım/rakip listesi, rank/LP ve son maç galibiyet oranı
-- **Rakip kaplaması:** şampiyon seçimi sırasında istemcinin solunda açılan,
-  her rakip için tier ve tahmini karşı rün/item gösteren ayrı pencere
+- **Rakip kaplaması:** şampiyon seçimi ve aktif maç sırasında istemcinin yanında
+  (yer varsa solunda, yoksa sağında) açılan, her rakip için tier ve tahmini karşı
+  rün/item gösteren ayrı pencere
 - **Komp analizi:** fiziksel/büyü hasarı, tank, ön saf ve menzilli dağılımı
 - **Maç detayı:** iki takımlı skorboard, item ikonları, altın/hasar/görüş
 - **Kişisel build:** son 50 maçtan çekirdek item, ayakkabı, KDA ve ortalama CS
@@ -50,7 +53,7 @@ Tlas'ı açtıktan sonra LoL istemcisini başlatman yeterli. Uygulama tepside
 
 - **Genel:** hesap, derece ve son maç özeti.
 - **Şampiyon Seçimi:** takım ve rakip kartları, komp analizi ve kişisel build.
-  Rakip kaplaması bu sekme açık olmasa da şampiyon seçimi başladığında görünür.
+  Rakip kaplaması bu sekme açık olmasa da şampiyon seçimi ve aktif maç boyunca görünür.
 - **Maçlar:** maç listesine tıklayınca skorboard açılır.
 - **Ayarlar:** deneysel meta, güncelleme kontrolü ve isteğe bağlı LCU otomasyonu.
 

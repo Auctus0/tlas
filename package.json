@@ -1,6 +1,6 @@
 {
   "name": "tlas",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Tlas — League of Legends draft and post-game companion",
   "type": "module",
   "scripts": {

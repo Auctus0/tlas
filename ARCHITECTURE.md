@@ -129,12 +129,14 @@ eksikleri çekmek.
 Rust arka plan görevi (2 sn)
         │  GET /lol-gameflow/v1/gameflow-phase
         ▼
-phase == "ChampSelect" ?
+phase ∈ {ChampSelect, GameStart, InProgress, Reconnect} ?
         │ evet                          │ hayır
         ▼                               ▼
 FindWindowW("RiotWindowClass")       pencereyi gizle
-GetWindowRect → sol kenar
-        │
+GetWindowRect + MonitorFromWindow
+GetMonitorInfoW → çalışma alanı
+        │  sol → sağ → çalışma alanı sol kenarı
+        │  (çalışma alanına clamp)
         ▼
 ayrı "overlay" webview penceresi
 (360×400, çerçevesiz, always-on-top, focusable=false)
@@ -148,8 +150,10 @@ Champ Select poll (4 sn) → rakip listesi
 
 Kaplama ana pencereye injection yapmaz. Ayrı bir Tauri penceresidir; `overlay`
 etiketli route yüklenir. Ana pencere tepsiye kapalıyken de faz izleme Rust
-tarafında sürdüğü için kaplama açılmaya devam eder. Deneysel meta kapalıyken
-OP.GG'ye hiç istek gitmez; tier yerine "—" gösterilir.
+tarafında sürdüğü için kaplama açılmaya devam eder. İstemci minimized ise
+konumlandırma istemci dikdörtgenine göre değil, monitörün çalışma alanına göre
+yapılır. Deneysel meta kapalıyken OP.GG'ye hiç istek gitmez; tier yerine "—"
+gösterilir.
 
 ### Genel sekmesi (hesap + lobi)
 
@@ -285,10 +289,11 @@ panic = "abort"
 | Gizli bilgi yok         | enemy cooldown, enemy jungle timer, fog-of-war bilgisi yok         |
 | Dış meta isteği         | Yalnızca şampiyon + pozisyon, varsayılan kapalı OP.GG MCP          |
 | MMR/ELO yok             | rank/LP göster, tahmini MMR gösterme                               |
-| Yazma minimum           | Sadece kullanıcı tıklarsa rune page / item set                     |
+| Yazma minimum           | Kullanıcı ayarıyla maç kabul, pick, ban (LCU PATCH)                |
 | Overlay injectsiz       | Ayrı always-on-top pencere veya OBS browser source                 |
 
-**Kore:** LCU tabanlı özellikleri KR platformunda kapat (`platformId == "KR"`).
+**Kore:** KR platform filtresi henüz uygulanmadı; LCU özellikleri her platformda
+aynı şekilde çalışır.
 
 ---
 
@@ -371,7 +376,7 @@ Polling yerine LCU WebSocket: `wss://127.0.0.1:{port}`, basic auth, `OnJsonApiEv
 | **M0** | Tauri iskelet, tray, LCU lockfile keşfi, "client bağlı" göstergesi | 1–2 gün |
 | **M1** | Champ select ekranı, 10 oyuncu kartı, rank + son maçlar, cache | 3–5 gün |
 | **M2** | Post-game liste + timeline metrikleri + grafikler | 3–5 gün |
-| **M3** | Overlay penceresi, ayarlar, installer + updater | 2–3 gün |
+| **M3** | Overlay penceresi, ayarlar, installer + updater (tamamlandı) | 2–3 gün |
 | **M4** | LCU WebSocket event'leri, testler, Developer Portal kaydı | 2–4 gün |
 
 ---
